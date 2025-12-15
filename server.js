@@ -2,21 +2,22 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
+const crypto = require("crypto");
 
 const app = express();
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const DATA_FILE = path.join(__dirname, "ucell_log.json");
+const USERS_FILE = path.join(__dirname, "users.json");
+const SESSIONS_FILE = path.join(__dirname, "sessions.json");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 const VISION_API_KEY = "AIzaSyAlU7VoOIFnQ9CNQvIY3fgrAsRK_JJ4xeI";
 
-// Ensure upload directory exists
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR);
 }
 
-// Configure file upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, UPLOAD_DIR);
@@ -29,31 +30,182 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-function readLogs() {
+function readJSON(filepath, defaultValue = []) {
   try {
-    if (!fs.existsSync(DATA_FILE)) {
-      fs.writeFileSync(DATA_FILE, "[]", "utf8");
-      return [];
+    if (!fs.existsSync(filepath)) {
+      fs.writeFileSync(filepath, JSON.stringify(defaultValue), "utf8");
+      return defaultValue;
     }
-    const raw = fs.readFileSync(DATA_FILE, "utf8");
+    const raw = fs.readFileSync(filepath, "utf8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(defaultValue) ? (Array.isArray(parsed) ? parsed : defaultValue) : parsed;
   } catch {
-    return [];
+    return defaultValue;
   }
 }
 
-function writeLogs(logs) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(logs, null, 2), "utf8");
+function writeJSON(filepath, data) {
+  fs.writeFileSync(filepath, JSON.stringify(data, null, 2), "utf8");
 }
 
-// Analyze image with Google Vision API
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function generateSessionToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function getSession(token) {
+  const sessions = readJSON(SESSIONS_FILE, {});
+  return sessions[token] || null;
+}
+
+function createSession(username) {
+  const token = generateSessionToken();
+  const sessions = readJSON(SESSIONS_FILE, {});
+  sessions[token] = {
+    username,
+    createdAt: new Date().toISOString()
+  };
+  writeJSON(SESSIONS_FILE, sessions);
+  return token;
+}
+
+function deleteSession(token) {
+  const sessions = readJSON(SESSIONS_FILE, {});
+  delete sessions[token];
+  writeJSON(SESSIONS_FILE, sessions);
+}
+function requireAuth(req, res, next) {
+  const token = req.headers['authorization']?.replace('Bearer ', '');
+  const session = getSession(token);
+  
+  if (!session) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+  
+  req.user = session.username;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  const users = readJSON(USERS_FILE, {});
+  const user = users[req.user];
+  
+  if (!user || !user.isAdmin) {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  
+  next();
+}
+
+function initializeUsers() {
+  const users = readJSON(USERS_FILE, {});
+  if (Object.keys(users).length === 0) {
+    users['james'] = {
+      password: hashPassword('ucell2024'),
+      isAdmin: true,
+      createdAt: new Date().toISOString()
+    };
+    writeJSON(USERS_FILE, users);
+    console.log('Created default admin user: james / ucell2024');
+  }
+}
+
+initializeUsers();
+
+app.post("/api/login", (req, res) => {
+  const { username, password } = req.body;
+  
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+  
+  const users = readJSON(USERS_FILE, {});
+  const user = users[username];
+  
+  if (!user || user.password !== hashPassword(password)) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  
+  const token = createSession(username);
+  
+  res.json({
+    token,
+    username,
+    isAdmin: user.isAdmin || false
+  });
+});
+
+app.post("/api/logout", requireAuth, (req, res) => {
+  const token = req.headers['authorization']?.replace('Bearer ', '');
+  deleteSession(token);
+  res.json({ ok: true });
+});
+
+app.get("/api/me", requireAuth, (req, res) => {
+  const users = readJSON(USERS_FILE, {});
+  const user = users[req.user];
+  
+  res.json({
+    username: req.user,
+    isAdmin: user.isAdmin || false
+  });
+});
+
+app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
+  const users = readJSON(USERS_FILE, {});
+  const userList = Object.keys(users).map(username => ({
+    username,
+    isAdmin: users[username].isAdmin || false,
+    createdAt: users[username].createdAt
+  }));
+  res.json(userList);
+});
+
+app.post("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
+  const { username, password } = req.body;
+  
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+  
+  const users = readJSON(USERS_FILE, {});
+  
+  if (users[username]) {
+    return res.status(400).json({ error: 'Username already exists' });
+  }
+  
+  users[username] = {
+    password: hashPassword(password),
+    isAdmin: false,
+    createdAt: new Date().toISOString()
+  };
+  
+  writeJSON(USERS_FILE, users);
+  
+  res.json({ ok: true, username });
+});
+
+app.delete("/api/admin/users/:username", requireAuth, requireAdmin, (req, res) => {
+  const { username } = req.params;
+  
+  if (username === req.user) {
+    return res.status(400).json({ error: 'Cannot delete your own account' });
+  }
+  
+  const users = readJSON(USERS_FILE, {});
+  delete users[username];
+  writeJSON(USERS_FILE, users);
+  
+  res.json({ ok: true });
+});
 async function analyzeImage(imagePath) {
   try {
     const imageBuffer = fs.readFileSync(imagePath);
     const base64Image = imageBuffer.toString('base64');
 
-    // Call Google Vision API
     const response = await fetch(
       `https://vision.googleapis.com/v1/images:annotate?key=${VISION_API_KEY}`,
       {
@@ -80,12 +232,10 @@ async function analyzeImage(imagePath) {
     const labels = data.responses[0].labelAnnotations || [];
     const objects = data.responses[0].localizedObjectAnnotations || [];
     
-    // Extract detected items
     const detectedLabels = labels.map(l => l.description.toLowerCase());
     const detectedObjects = objects.map(o => o.name.toLowerCase());
     const allDetected = [...detectedLabels, ...detectedObjects];
 
-    // Determine if it's food or stool
     const foodKeywords = ['food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
                           'pizza', 'pasta', 'rice', 'vegetable', 'fruit', 'meat', 'plate',
                           'bowl', 'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner'];
@@ -113,7 +263,6 @@ async function analyzeImage(imagePath) {
 }
 
 function analyzeFoodImage(detected, labels) {
-  // Identify food type
   const foodTypes = {
     'salad': ['salad', 'lettuce', 'vegetable', 'greens'],
     'burrito': ['burrito', 'wrap', 'tortilla', 'mexican'],
@@ -134,7 +283,6 @@ function analyzeFoodImage(detected, labels) {
     }
   }
 
-  // Estimate nutrition (rough estimates based on typical servings)
   const nutritionEstimates = {
     'salad': { calories: 250, protein: 8, fat: 12, fiber: 6 },
     'burrito': { calories: 650, protein: 25, fat: 28, fiber: 10 },
@@ -159,13 +307,11 @@ function analyzeFoodImage(detected, labels) {
 }
 
 function analyzeStoolImage(detected) {
-  // Basic stool analysis (Bristol scale estimation would require more sophisticated AI)
   return {
     type: 'stool',
     analysis: 'Stool photo logged. Review manually for Bristol scale classification.'
   };
 }
-
 app.get("/", (req, res) => {
   res.send(`
 <!doctype html>
@@ -181,9 +327,7 @@ app.get("/", (req, res) => {
       --muted: rgba(233, 238, 247, 0.35);
       --hairline: rgba(233, 238, 247, 0.08);
     }
-
     * { box-sizing: border-box; }
-
     html, body {
       margin: 0;
       padding: 0;
@@ -191,12 +335,46 @@ app.get("/", (req, res) => {
       color: var(--fg);
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
-
-    body {
-      min-height: 100vh;
-      padding: 12px;
+    body { min-height: 100vh; padding: 12px; }
+    #login-screen {
+      max-width: 400px;
+      margin: 100px auto;
+      padding: 20px;
     }
-
+    #login-screen h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      letter-spacing: 0.2em;
+    }
+    #login-screen input {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 12px;
+      background: transparent;
+      border: 1px solid var(--hairline);
+      color: var(--fg);
+      font-family: inherit;
+      font-size: 16px;
+    }
+    #login-screen button {
+      width: 100%;
+      padding: 12px;
+      background: transparent;
+      border: 1px solid var(--hairline);
+      color: var(--fg);
+      font-family: inherit;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #login-screen button:active {
+      background: rgba(233, 238, 247, 0.05);
+    }
+    .error {
+      color: #ff6b6b;
+      font-size: 14px;
+      margin-top: 10px;
+    }
+    #app { display: none; }
     #input-container {
       position: sticky;
       top: 8px;
@@ -204,7 +382,6 @@ app.get("/", (req, res) => {
       align-items: center;
       gap: 8px;
     }
-
     #input {
       flex: 1;
       height: 44px;
@@ -218,12 +395,10 @@ app.get("/", (req, res) => {
       caret-color: var(--fg);
       animation: pulse-caret 2s ease-in-out infinite;
     }
-
     @keyframes pulse-caret {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.4; }
     }
-
     #add-btn {
       width: 32px;
       height: 32px;
@@ -238,11 +413,9 @@ app.get("/", (req, res) => {
       justify-content: center;
       flex-shrink: 0;
     }
-
     #add-btn:active {
       background: rgba(233, 238, 247, 0.05);
     }
-
     #upload-menu {
       position: fixed;
       bottom: 60px;
@@ -256,11 +429,7 @@ app.get("/", (req, res) => {
       gap: 4px;
       z-index: 1000;
     }
-
-    #upload-menu.active {
-      display: flex;
-    }
-
+    #upload-menu.active { display: flex; }
     .upload-option {
       padding: 12px 16px;
       background: transparent;
@@ -272,41 +441,34 @@ app.get("/", (req, res) => {
       cursor: pointer;
       border-radius: 4px;
     }
-
     .upload-option:active {
       background: rgba(233, 238, 247, 0.08);
     }
-
     #timeline {
       margin-top: 16px;
       font-size: 13px;
       line-height: 18px;
       color: var(--muted);
     }
-
     .entry {
       padding: 6px 0;
       border-top: 1px solid rgba(233,238,247,0.05);
       white-space: pre-wrap;
     }
-
     .entry img {
       max-width: 200px;
       margin-top: 8px;
       border-radius: 4px;
       border: 1px solid var(--hairline);
     }
-
     .entry a {
       color: var(--muted);
       text-decoration: underline;
     }
-
     .analyzing {
       color: rgba(233, 238, 247, 0.5);
       font-style: italic;
     }
-
     #brand {
       position: fixed;
       left: 12px;
@@ -317,73 +479,161 @@ app.get("/", (req, res) => {
       cursor: pointer;
       user-select: none;
     }
-
-    .hidden {
-      display: none;
+    .hidden { display: none; }
+    #admin-panel { padding: 20px; }
+    #admin-panel h2 {
+      font-size: 20px;
+      margin-bottom: 20px;
+    }
+    .user-list { margin-bottom: 30px; }
+    .user-item {
+      padding: 12px;
+      border: 1px solid var(--hairline);
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .delete-btn {
+      padding: 6px 12px;
+      background: transparent;
+      border: 1px solid #ff6b6b;
+      color: #ff6b6b;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .add-user-form input {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 12px;
+      background: transparent;
+      border: 1px solid var(--hairline);
+      color: var(--fg);
+      font-family: inherit;
+    }
+    .add-user-form button {
+      padding: 12px 24px;
+      background: transparent;
+      border: 1px solid var(--hairline);
+      color: var(--fg);
+      cursor: pointer;
     }
   </style>
 </head>
 <body>
-
-  <div id="input-container">
-    <input
-      id="input"
-      autofocus
-      autocomplete="off"
-      autocapitalize="off"
-      autocorrect="off"
-      spellcheck="false"
-      placeholder="type and press enter"
-    />
-    <button id="add-btn">+</button>
+  <div id="login-screen">
+    <h1>UCell</h1>
+    <input type="text" id="login-username" placeholder="Username" autocomplete="username">
+    <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+    <button id="login-btn">Login</button>
+    <div id="login-error" class="error"></div>
   </div>
-
-  <div id="upload-menu">
-    <button class="upload-option" id="photo-btn">📷 Photo</button>
-    <button class="upload-option" id="file-btn">📄 File</button>
+  <div id="app">
+    <div id="input-container">
+      <input id="input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="type and press enter" />
+      <button id="add-btn">+</button>
+    </div>
+    <div id="upload-menu">
+      <button class="upload-option" id="photo-btn">📷 Photo</button>
+      <button class="upload-option" id="file-btn">📄 File</button>
+    </div>
+    <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
+    <input type="file" id="file-input" accept=".pdf,.doc,.docx,.txt" class="hidden">
+    <div id="timeline"></div>
+    <div id="brand">UCell</div>
   </div>
-
-  <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
-  <input type="file" id="file-input" accept=".pdf,.doc,.docx,.txt" class="hidden">
-
-  <div id="timeline"></div>
-  <div id="brand">UCell</div>
-
   <script>
-    const input = document.getElementById("input");
-    const timeline = document.getElementById("timeline");
-    const brand = document.getElementById("brand");
-    const addBtn = document.getElementById("add-btn");
-    const uploadMenu = document.getElementById("upload-menu");
-    const photoBtn = document.getElementById("photo-btn");
-    const fileBtn = document.getElementById("file-btn");
-    const photoInput = document.getElementById("photo-input");
-    const fileInput = document.getElementById("file-input");
+    let authToken = localStorage.getItem('ucell_token');
+    let isAdmin = false;
+    const loginScreen = document.getElementById('login-screen');
+    const app = document.getElementById('app');
+    const loginBtn = document.getElementById('login-btn');
+    const loginError = document.getElementById('login-error');
+    const input = document.getElementById('input');
+    const timeline = document.getElementById('timeline');
+    const brand = document.getElementById('brand');
+    const addBtn = document.getElementById('add-btn');
+    const uploadMenu = document.getElementById('upload-menu');
+    const photoBtn = document.getElementById('photo-btn');
+    const fileBtn = document.getElementById('file-btn');
+    const photoInput = document.getElementById('photo-input');
+    const fileInput = document.getElementById('file-input');
+
+    async function checkAuth() {
+      if (!authToken) return false;
+      try {
+        const res = await fetch('/api/me', {
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          isAdmin = data.isAdmin;
+          return true;
+        }
+      } catch {}
+      authToken = null;
+      localStorage.removeItem('ucell_token');
+      return false;
+    }
+
+    async function login() {
+      const username = document.getElementById('login-username').value;
+      const password = document.getElementById('login-password').value;
+      loginError.textContent = '';
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          authToken = data.token;
+          isAdmin = data.isAdmin;
+          localStorage.setItem('ucell_token', authToken);
+          showApp();
+        } else {
+          loginError.textContent = 'Invalid username or password';
+        }
+      } catch {
+        loginError.textContent = 'Login failed';
+      }
+    }
+
+    function showApp() {
+      loginScreen.style.display = 'none';
+      app.style.display = 'block';
+      input.focus();
+      loadHistory();
+    }
+
+    loginBtn.addEventListener('click', login);
+    document.getElementById('login-password').addEventListener('keydown', e => {
+      if (e.key === 'Enter') login();
+    });
 
     function renderEntry(entry) {
       const div = document.createElement("div");
       div.className = "entry";
-      
       let html = entry.text || "";
-      
       if (entry.file) {
         if (entry.file.type === "image") {
-          html += \`<br><img src="/uploads/\${entry.file.name}" alt="uploaded image">\`;
+          html += '<br><img src="/uploads/' + entry.file.name + '" alt="uploaded image">';
         } else {
-          html += \`<br><a href="/uploads/\${entry.file.name}" target="_blank">📎 \${entry.file.original}</a>\`;
+          html += '<br><a href="/uploads/' + entry.file.name + '" target="_blank">📎 ' + entry.file.original + '</a>';
         }
       }
-      
       div.innerHTML = html;
       return div;
     }
 
     async function loadHistory() {
       try {
-        const res = await fetch("/logs");
+        const res = await fetch("/logs", {
+          headers: { 'Authorization': 'Bearer ' + authToken }
+        });
         const logs = await res.json();
         if (!Array.isArray(logs)) return;
-
         timeline.innerHTML = "";
         const reversed = logs.slice().reverse();
         for (const entry of reversed) {
@@ -399,21 +649,16 @@ app.get("/", (req, res) => {
       } catch {}
     }
 
-    loadHistory();
-
-    // Toggle upload menu
     addBtn.addEventListener("click", () => {
       uploadMenu.classList.toggle("active");
     });
 
-    // Close menu when clicking outside
     document.addEventListener("click", (e) => {
       if (!addBtn.contains(e.target) && !uploadMenu.contains(e.target)) {
         uploadMenu.classList.remove("active");
       }
     });
 
-    // Photo upload
     photoBtn.addEventListener("click", () => {
       photoInput.click();
       uploadMenu.classList.remove("active");
@@ -422,34 +667,27 @@ app.get("/", (req, res) => {
     photoInput.addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-
-      // Show "analyzing..." message
       const analyzingDiv = document.createElement("div");
       analyzingDiv.className = "entry analyzing";
       analyzingDiv.textContent = "📷 Analyzing photo...";
       timeline.insertBefore(analyzingDiv, timeline.firstChild);
-
       const formData = new FormData();
       formData.append("file", file);
-
       try {
         const res = await fetch("/upload", {
           method: "POST",
+          headers: { 'Authorization': 'Bearer ' + authToken },
           body: formData
         });
-        
         if (res.ok) {
           loadHistory();
         }
       } catch (err) {
-        console.error("Upload failed:", err);
         analyzingDiv.textContent = "Upload failed";
       }
-
       photoInput.value = "";
     });
 
-    // File upload
     fileBtn.addEventListener("click", () => {
       fileInput.click();
       uploadMenu.classList.remove("active");
@@ -458,38 +696,31 @@ app.get("/", (req, res) => {
     fileInput.addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-
       const formData = new FormData();
       formData.append("file", file);
       formData.append("text", "File uploaded: " + file.name);
-
       try {
         const res = await fetch("/upload", {
           method: "POST",
+          headers: { 'Authorization': 'Bearer ' + authToken },
           body: formData
         });
-        
         if (res.ok) {
           loadHistory();
         }
       } catch (err) {
         console.error("Upload failed:", err);
       }
-
       fileInput.value = "";
     });
 
-    // Hidden dashboard portal
     let tapCount = 0;
     let tapTimer = null;
-
     brand.addEventListener("click", () => {
       tapCount++;
-      
       if (tapCount === 1) {
         tapTimer = setTimeout(() => { tapCount = 0; }, 1000);
       }
-      
       if (tapCount === 3) {
         clearTimeout(tapTimer);
         tapCount = 0;
@@ -498,133 +729,143 @@ app.get("/", (req, res) => {
     });
 
     async function openDashboard() {
-      const res = await fetch("/logs");
+      if (isAdmin) {
+        showAdminPanel();
+      } else {
+        showUserDashboard();
+      }
+    }
+
+    async function showUserDashboard() {
+      const res = await fetch("/logs", {
+        headers: { 'Authorization': 'Bearer ' + authToken }
+      });
       const logs = await res.json();
-      
       const userLogs = logs.filter(e => e.role === "user");
       const days = new Set(userLogs.map(e => e.ts.split("T")[0])).size;
-      
-      document.body.innerHTML = \`
-        <div style="padding: 20px; text-align: center;">
-          <div style="font-size: 48px; margin-bottom: 20px; color: var(--fg);">\${userLogs.length}</div>
-          <div style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">entries logged</div>
-          <div style="font-size: 14px; color: var(--muted); margin-bottom: 40px;">active for \${days} days</div>
-          <button id="back" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer;">Back to Terminal</button>
-        </div>
-      \`;
-      
+      document.body.innerHTML = '<div style="padding: 20px; text-align: center;"><div style="font-size: 48px; margin-bottom: 20px; color: var(--fg);">' + userLogs.length + '</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">entries logged</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 40px;">active for ' + days + ' days</div><button id="back" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer;">Back to Terminal</button></div>';
       document.getElementById("back").addEventListener("click", () => {
         location.reload();
       });
     }
 
-    // Text input
+    async function showAdminPanel() {
+      const res = await fetch('/api/admin/users', {
+        headers: { 'Authorization': 'Bearer ' + authToken }
+      });
+      const users = await res.json();
+      document.body.innerHTML = '<div id="admin-panel"><h2>Admin Panel</h2><div class="user-list"><h3>Users</h3>' + users.map(u => '<div class="user-item"><span>' + u.username + (u.isAdmin ? ' (Admin)' : '') + '</span>' + (!u.isAdmin ? '<button class="delete-btn" data-username="' + u.username + '">Delete</button>' : '') + '</div>').join('') + '</div><div class="add-user-form"><h3>Add New User</h3><input type="text" id="new-username" placeholder="Username"><input type="password" id="new-password" placeholder="Temporary Password"><button id="add-user-btn">Add User</button></div><button id="back-admin" style="margin-top: 30px; padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); cursor: pointer;">Back to Terminal</button></div>';
+      document.getElementById("back-admin").addEventListener("click", () => {
+        location.reload();
+      });
+      document.getElementById("add-user-btn").addEventListener("click", async () => {
+        const username = document.getElementById("new-username").value;
+        const password = document.getElementById("new-password").value;
+        const res = await fetch('/api/admin/users', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + authToken,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ username, password })
+        });
+        if (res.ok) {
+          alert('User ' + username + ' created with password: ' + password);
+          showAdminPanel();
+        } else {
+          alert('Failed to create user');
+        }
+      });
+      document.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const username = btn.dataset.username;
+          if (confirm('Delete user ' + username + '?')) {
+            await fetch('/api/admin/users/' + username, {
+              method: 'DELETE',
+              headers: { 'Authorization': 'Bearer ' + authToken }
+            });
+            showAdminPanel();
+          }
+        });
+      });
+    }
+
     input.addEventListener("keydown", e => {
       if (e.key === "Enter") {
         const text = input.value.trim();
         if (!text) return;
-
         const userDiv = document.createElement("div");
         userDiv.className = "entry";
         userDiv.textContent = text;
         timeline.insertBefore(userDiv, timeline.firstChild);
-
         const guardianDiv = document.createElement("div");
         guardianDiv.className = "entry";
         guardianDiv.textContent = "Noted. We'll watch for patterns.";
         timeline.insertBefore(guardianDiv, timeline.firstChild);
-
         input.value = "";
-
         fetch("/log", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            'Authorization': 'Bearer ' + authToken,
+            'Content-Type': 'application/json'
+          },
           body: JSON.stringify({ text })
         });
       }
     });
-  </script>
 
+    checkAuth().then(authenticated => {
+      if (authenticated) {
+        showApp();
+      }
+    });
+  </script>
 </body>
 </html>
-
   `);
 });
 
-app.get("/logs", (req, res) => {
-  res.json(readLogs());
+app.get("/logs", requireAuth, (req, res) => {
+  const allLogs = readJSON(DATA_FILE);
+  const userLogs = allLogs.filter(log => log.user === req.user);
+  res.json(userLogs);
 });
 
-app.post("/log", (req, res) => {
-  const text =
-    (req.body && typeof req.body.text === "string")
-      ? req.body.text.trim()
-      : "";
-
+app.post("/log", requireAuth, (req, res) => {
+  const text = (req.body && typeof req.body.text === "string") ? req.body.text.trim() : "";
   if (!text) return res.status(400).json({ ok: false });
-
-  const logs = readLogs();
+  const allLogs = readJSON(DATA_FILE);
   const ts = new Date().toISOString();
-
-  logs.push({
-    ts,
-    role: "user",
-    text
-  });
-
-  logs.push({
-    ts,
-    role: "guardian",
-    text: "Noted. We'll watch for patterns."
-  });
-
-  writeLogs(logs);
-
+  allLogs.push({ ts, user: req.user, role: "user", text });
+  allLogs.push({ ts, user: req.user, role: "guardian", text: "Noted. We'll watch for patterns." });
+  writeJSON(DATA_FILE, allLogs);
   res.json({ ok: true });
 });
 
-app.post("/upload", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ ok: false });
-  }
-
-  const logs = readLogs();
+app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false });
+  const allLogs = readJSON(DATA_FILE);
   const ts = new Date().toISOString();
   const filePath = path.join(UPLOAD_DIR, req.file.filename);
   const fileType = req.file.mimetype.startsWith("image/") ? "image" : "file";
-
   let analysisResult = null;
   let logText = req.body.text || "File uploaded";
-
-  // Analyze if it's an image
   if (fileType === "image") {
     analysisResult = await analyzeImage(filePath);
     logText = analysisResult.analysis || "Photo uploaded";
   }
-
-  logs.push({
-    ts,
-    role: "user",
-    text: logText,
-    file: {
-      name: req.file.filename,
-      original: req.file.originalname,
-      type: fileType
-    },
+  allLogs.push({
+    ts, user: req.user, role: "user", text: logText,
+    file: { name: req.file.filename, original: req.file.originalname, type: fileType },
     aiAnalysis: analysisResult
   });
-
-  logs.push({
-    ts,
-    role: "guardian",
-    text: "Noted. We'll watch for patterns."
-  });
-
-  writeLogs(logs);
-
+  allLogs.push({ ts, user: req.user, role: "guardian", text: "Noted. We'll watch for patterns." });
+  writeJSON(DATA_FILE, allLogs);
   res.json({ ok: true });
 });
 
-app.listen(3000, () => {
-  console.log("running at http://localhost:3000");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`UCell Terminal running at http://localhost:${PORT}`);
+  console.log('Default admin: james / ucell2024');
 });
