@@ -216,7 +216,8 @@ async function analyzeImage(imagePath) {
             image: { content: base64Image },
             features: [
               { type: 'LABEL_DETECTION', maxResults: 10 },
-              { type: 'OBJECT_LOCALIZATION', maxResults: 10 }
+              { type: 'OBJECT_LOCALIZATION', maxResults: 10 },
+              { type: 'IMAGE_PROPERTIES' }
             ]
           }]
         })
@@ -231,24 +232,52 @@ async function analyzeImage(imagePath) {
 
     const labels = data.responses[0].labelAnnotations || [];
     const objects = data.responses[0].localizedObjectAnnotations || [];
+    const colors = data.responses[0].imagePropertiesAnnotation?.dominantColors?.colors || [];
     
     const detectedLabels = labels.map(l => l.description.toLowerCase());
     const detectedObjects = objects.map(o => o.name.toLowerCase());
     const allDetected = [...detectedLabels, ...detectedObjects];
 
-    const foodKeywords = ['food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
-                          'pizza', 'pasta', 'rice', 'vegetable', 'fruit', 'meat', 'plate',
-                          'bowl', 'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner'];
-    
-    const stoolKeywords = ['toilet', 'bathroom', 'stool', 'feces', 'bowl'];
+    // Check for brown/tan colors (strong indicator of stool)
+    const hasBrownColor = colors.some(color => {
+      const r = color.color.red || 0;
+      const g = color.color.green || 0;
+      const b = color.color.blue || 0;
+      // Brown/tan color range
+      return (r > 100 && r < 200 && g > 70 && g < 150 && b > 30 && b < 100);
+    });
 
-    const isFood = allDetected.some(item => foodKeywords.some(kw => item.includes(kw)));
-    const isStool = allDetected.some(item => stoolKeywords.some(kw => item.includes(kw)));
+    // Enhanced stool detection keywords
+    const stoolKeywords = [
+      'toilet', 'bathroom', 'feces', 'excrement', 'waste',
+      'defecation', 'bowel', 'restroom', 'lavatory', 'water closet',
+      'porcelain', 'ceramic', 'flush', 'commode'
+    ];
+
+    const foodKeywords = [
+      'food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
+      'pizza', 'pasta', 'rice', 'vegetable', 'fruit', 'meat', 'plate',
+      'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner', 'snack',
+      'dessert', 'bread', 'cheese', 'chicken', 'beef', 'pork', 'fish'
+    ];
+
+    // Check for stool FIRST (before food)
+    const stoolMatches = allDetected.filter(item => 
+      stoolKeywords.some(kw => item.includes(kw))
+    );
+
+    // If we have toilet/bathroom keywords OR brown color, it's stool
+    if (stoolMatches.length > 0 || hasBrownColor) {
+      return analyzeStoolImage(allDetected);
+    }
+
+    // Then check for food
+    const isFood = allDetected.some(item => 
+      foodKeywords.some(kw => item.includes(kw))
+    );
 
     if (isFood) {
       return analyzeFoodImage(allDetected, labels);
-    } else if (isStool) {
-      return analyzeStoolImage(allDetected);
     } else {
       return {
         type: 'photo',
