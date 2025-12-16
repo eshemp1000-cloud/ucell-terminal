@@ -1,0 +1,95 @@
+[
+  {
+    "ts": "2025-12-14T04:36:49.445Z",
+    "role": "user",
+    "text": "Test 123",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T04:36:49.445Z",
+    "role": "guardian",
+    "text": "Noted. We’ll watch for patterns.",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T18:00:48.938Z",
+    "role": "user",
+    "text": "Photo uploaded",
+    "file": {
+      "name": "1765735248776-image.jpg",
+      "original": "image.jpg",
+      "type": "image"
+    },
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T18:00:48.938Z",
+    "role": "guardian",
+    "text": "Noted. We'll watch for patterns.",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T18:07:47.952Z",
+    "role": "user",
+    "text": "slept 7 hours, woke 2x, 6/10",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T18:07:47.952Z",
+    "role": "guardian",
+    "text": "Noted. We'll watch for patterns.",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T19:20:40.159Z",
+    "role": "user",
+    "text": "Breakfast - Est: 500cal, 20g protein, 22g fat, 3g fiber",
+    "file": {
+      "name": "1765740039517-image.jpg",
+      "original": "image.jpg",
+      "type": "image"
+    },
+    "aiAnalysis": {
+      "type": "food",
+      "foodType": "breakfast",
+      "nutrition": {
+        "calories": 500,
+        "protein": 20,
+        "fat": 22,
+        "fiber": 3
+      },
+      "analysis": "Breakfast - Est: 500cal, 20g protein, 22g fat, 3g fiber"
+    },
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T19:20:40.159Z",
+    "role": "guardian",
+    "text": "Noted. We'll watch for patterns.",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T19:32:58.913Z",
+    "role": "user",
+    "text": "ate everything but banana",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T19:32:58.913Z",
+    "role": "guardian",
+    "text": "Noted. We'll watch for patterns.",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T19:37:45.707Z",
+    "role": "user",
+    "text": "6 creon",
+    "user": "james"
+  },
+  {
+    "ts": "2025-12-14T19:37:45.707Z",
+    "role": "guardian",
+    "text": "Noted. We'll watch for patterns.",
+    "user": "james"
+  }
+]
