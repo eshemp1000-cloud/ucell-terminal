@@ -541,6 +541,7 @@ app.get("/", (req, res) => {
     <input type="file" id="file-input" accept=".pdf,.doc,.docx,.txt" class="hidden">
     <div id="timeline"></div>
     <div id="brand">UCell</div>
+    <button id="medical-history-btn" style="position: fixed; top: 20px; right: 20px; padding: 8px 16px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: 'Courier New', monospace; font-size: 12px; cursor: pointer; z-index: 1000;">Medical History</button>
   </div>
   <script>
     let authToken = localStorage.getItem('ucell_token');
@@ -727,7 +728,46 @@ app.get("/", (req, res) => {
         openDashboard();
       }
     });
-
+// Medical History button
+const medicalHistoryBtn = document.getElementById('medical-history-btn');
+if (medicalHistoryBtn) {
+  medicalHistoryBtn.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/medical-records', {
+        headers: { 'Authorization': 'Bearer ' + authToken }
+      });
+      const records = await res.json();
+      
+      if (!records || records.length === 0) {
+        alert('No medical records found');
+        return;
+      }
+      
+      // Build HTML
+      let html = '<div style="padding: 20px; max-width: 800px; margin: 0 auto;">';
+      html += '<h2 style="color: var(--fg); margin-bottom: 30px;">Medical History</h2>';
+      
+      records.forEach(record => {
+        html += '<div style="margin-bottom: 40px; padding: 20px; border: 1px solid var(--hairline); border-radius: 8px;">';
+        html += '<h3 style="color: var(--fg); margin-bottom: 15px;">' + record.filename + '</h3>';
+        html += '<div style="color: var(--fg); line-height: 1.6; white-space: pre-wrap;">' + record.summary + '</div>';
+        html += '</div>';
+      });
+      
+      html += '<button id="back-to-terminal" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; cursor: pointer; margin-top: 20px;">Back to Terminal</button>';
+      html += '</div>';
+      
+      document.body.innerHTML = html;
+      
+      document.getElementById('back-to-terminal').addEventListener('click', () => {
+        location.reload();
+      });
+      
+    } catch (err) {
+      alert('Failed to load medical records');
+    }
+  });
+}
     async function openDashboard() {
       if (isAdmin) {
         showAdminPanel();
@@ -830,6 +870,11 @@ app.get("/logs", requireAuth, (req, res) => {
   const userLogs = allLogs.filter(log => log.user === req.user);
   res.json(userLogs);
 });
+app.get("/medical-records", requireAuth, (req, res) => {
+  const MEDICAL_RECORDS_FILE = path.join(__dirname, 'medical_records.json');
+  const records = readJSON(MEDICAL_RECORDS_FILE, []);
+  res.json(records);
+});
 
 app.post("/log", requireAuth, (req, res) => {
   const text = (req.body && typeof req.body.text === "string") ? req.body.text.trim() : "";
@@ -863,7 +908,94 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   writeJSON(DATA_FILE, allLogs);
   res.json({ ok: true });
 });
+// Medical record upload endpoint
+app.post("/upload-medical-record", requireAuth, upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
 
+  if (req.file.mimetype !== 'application/pdf') {
+    return res.status(400).json({ error: 'Only PDF files are supported' });
+  }
+
+  try {
+    const pdfParse = require('pdf-parse');
+    const pdfBuffer = fs.readFileSync(req.file.path);
+    const pdfData = await pdfParse(pdfBuffer);
+    const extractedText = pdfData.text;
+
+    // Parse with Claude API
+    const parseResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY || 'YOUR_KEY_HERE',
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 2000,
+        messages: [{
+          role: 'user',
+          content: `Parse this medical document and extract key information. Return ONLY a JSON object with these fields:
+          
+{
+  "document_type": "lab_result" | "imaging_report" | "clinical_note" | "discharge_summary" | "other",
+  "date_of_service": "YYYY-MM-DD",
+  "provider": "provider name",
+  "key_findings": "brief summary",
+  "metrics": {} // any numeric values like lab results
+}
+
+Document text:
+${extractedText}`
+        }]
+      })
+    });
+
+    const parseData = await parseResponse.json();
+    let parsedRecord = {};
+    
+    try {
+      const responseText = parseData.content[0].text;
+      parsedRecord = JSON.parse(responseText);
+    } catch {
+      parsedRecord = {
+        document_type: 'other',
+        date_of_service: new Date().toISOString().split('T')[0],
+        provider: 'Unknown',
+        key_findings: 'Could not parse',
+        metrics: {}
+      };
+    }
+
+    // Store in medical_records.json
+    const MEDICAL_RECORDS_FILE = path.join(__dirname, 'medical_records.json');
+    const allRecords = readJSON(MEDICAL_RECORDS_FILE, []);
+    
+    allRecords.push({
+      id: Date.now().toString(),
+      user: req.user,
+      filename: req.file.originalname,
+      filepath: req.file.path,
+      uploaded_at: new Date().toISOString(),
+      parsed_data: parsedRecord,
+      raw_text: extractedText.substring(0, 5000) // Store first 5000 chars
+    });
+
+    writeJSON(MEDICAL_RECORDS_FILE, allRecords);
+
+    res.json({ 
+      ok: true, 
+      message: 'Medical record uploaded and parsed',
+      parsed: parsedRecord
+    });
+
+  } catch (error) {
+    console.error('Medical record processing error:', error);
+    res.status(500).json({ error: 'Failed to process medical record' });
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`UCell Terminal running at http://localhost:${PORT}`);
