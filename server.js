@@ -540,8 +540,8 @@ app.get("/", (req, res) => {
     <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
     <input type="file" id="file-input" accept=".pdf,.doc,.docx,.txt" class="hidden">
     <div id="timeline"></div>
-    <div id="brand">UCell</div>
-    <button id="medical-history-btn" style="position: fixed; top: 20px; right: 20px; padding: 8px 16px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: 'Courier New', monospace; font-size: 12px; cursor: pointer; z-index: 1000;">Medical History</button>
+    <div id="brand" style="font-size: 18px; padding: 15px; cursor: pointer;">UCell</div>
+    
   </div>
   <script>
     let authToken = localStorage.getItem('ucell_token');
@@ -783,10 +783,31 @@ if (medicalHistoryBtn) {
       const logs = await res.json();
       const userLogs = logs.filter(e => e.role === "user");
       const days = new Set(userLogs.map(e => e.ts.split("T")[0])).size;
-      document.body.innerHTML = '<div style="padding: 20px; text-align: center;"><div style="font-size: 48px; margin-bottom: 20px; color: var(--fg);">' + userLogs.length + '</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">entries logged</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 40px;">active for ' + days + ' days</div><button id="back" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer;">Back to Terminal</button></div>';
+     document.body.innerHTML = '<div style="padding: 20px; text-align: center;"><div style="font-size: 48px; margin-bottom: 20px; color: var(--fg);">' + userLogs.length + '</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">entries logged</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 40px;">active for ' + days + ' days</div><button id="medical-history-dashboard" style="margin-bottom: 15px; padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer; display: block; margin-left: auto; margin-right: auto;">Medical History</button><button id="back" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer;">Back to Terminal</button></div>';
       document.getElementById("back").addEventListener("click", () => {
         location.reload();
       });
+      document.getElementById("medical-history-dashboard").addEventListener("click", async () => {
+      const res = await fetch('/medical-records', {
+        headers: { 'Authorization': 'Bearer ' + authToken }
+      });
+      const records = await res.json();
+      
+      let html = '<div style="padding: 20px; max-width: 800px; margin: 0 auto;">';
+      html += '<h2 style="color: var(--fg); margin-bottom: 30px;">Medical History</h2>';
+      
+      records.forEach(record => {
+        html += '<div style="margin-bottom: 40px; padding: 20px; border: 1px solid var(--hairline); border-radius: 8px;">';
+        html += '<h3 style="color: var(--fg); margin-bottom: 15px;">' + record.filename + '</h3>';
+        html += '<div style="color: var(--fg); line-height: 1.6; white-space: pre-wrap;">' + record.summary + '</div>';
+        html += '</div>';
+      });
+      
+      html += '<button id="back-to-dashboard" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); cursor: pointer;">Back</button></div>';
+      
+      document.body.innerHTML = html;
+      document.getElementById('back-to-dashboard').addEventListener('click', () => location.reload());
+    });
     }
 
     async function showAdminPanel() {
