@@ -306,10 +306,49 @@ function analyzeFoodImage(detected, labels) {
   };
 }
 
-function analyzeStoolImage(detected) {
+async function analyzeStoolImage(detected) {
+  // Bristol Stool Scale Classification
+  let bristolType = null;
+  let bristolDescription = '';
+  
+  // Analyze consistency from detected labels
+  const labelText = detected.join(' ').toLowerCase();
+  
+  // Bristol Scale Type determination based on keywords
+  if (labelText.includes('hard') || labelText.includes('lumpy') || labelText.includes('pellet')) {
+    bristolType = labelText.includes('separate') ? 1 : 2;
+    bristolDescription = bristolType === 1 
+      ? 'Type 1: Separate hard lumps (severe constipation)'
+      : 'Type 2: Lumpy and sausage-like (mild constipation)';
+  } else if (labelText.includes('crack') || (labelText.includes('sausage') && labelText.includes('surface'))) {
+    bristolType = 3;
+    bristolDescription = 'Type 3: Sausage-shaped with cracks (normal)';
+  } else if (labelText.includes('smooth') && labelText.includes('soft')) {
+    bristolType = 4;
+    bristolDescription = 'Type 4: Smooth and soft (ideal/normal)';
+  } else if (labelText.includes('soft') || labelText.includes('blob') || labelText.includes('fluffy')) {
+    bristolType = 5;
+    bristolDescription = 'Type 5: Soft blobs with clear edges (mild diarrhea)';
+  } else if (labelText.includes('mushy') || labelText.includes('ragged') || labelText.includes('porridge')) {
+    bristolType = 6;
+    bristolDescription = 'Type 6: Mushy with ragged edges (diarrhea)';
+  } else if (labelText.includes('liquid') || labelText.includes('watery') || labelText.includes('diarrhea')) {
+    bristolType = 7;
+    bristolDescription = 'Type 7: Entirely liquid (severe diarrhea)';
+  } else {
+    // Default to Type 4 if unclear
+    bristolType = 4;
+    bristolDescription = 'Type 4: Smooth and soft (normal/default)';
+  }
+
   return {
     type: 'stool',
-    analysis: 'Stool photo logged. Review manually for Bristol scale classification.'
+    bristolScale: {
+      type: bristolType,
+      description: bristolDescription
+    },
+    detectedLabels: detected.slice(0, 5),
+    analysis: `Stool logged - ${bristolDescription}`
   };
 }
 app.get("/", (req, res) => {
