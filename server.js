@@ -576,7 +576,7 @@ app.get("/", (req, res) => {
       <button class="upload-option" id="photo-btn">📷 Photo</button>
       <button class="upload-option" id="file-btn">📄 File</button>
     </div>
-    <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
+    <input type="file" id="photo-input" accept="image/*" class="hidden">
     <input type="file" id="file-input" accept=".pdf,.doc,.docx,.txt" class="hidden">
     <div id="timeline"></div>
     <div id="brand" style="font-size: 18px; padding: 15px; cursor: pointer;">UCell</div>
