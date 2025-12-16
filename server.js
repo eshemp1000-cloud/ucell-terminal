@@ -957,7 +957,11 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   let logText = req.body.text || "File uploaded";
   if (fileType === "image") {
     analysisResult = await analyzeImage(filePath);
-    logText = analysisResult.analysis || "Photo uploaded";
+    if (analysisResult.type === 'stool' && analysisResult.bristolScale) {
+      logText = 'Stool logged - ' + analysisResult.bristolScale.description;
+    } else {
+      logText = analysisResult.analysis || "Photo uploaded";
+    }
   }
   allLogs.push({
     ts, user: req.user, role: "user", text: logText,
