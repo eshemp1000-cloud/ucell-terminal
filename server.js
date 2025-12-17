@@ -3,14 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const crypto = require("crypto");
-const cloudinary = require('cloudinary').v2;
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'devsizx4',
-  api_key: process.env.CLOUDINARY_API_KEY || '632751616349568',
-  api_secret: process.env.CLOUDINARY_API_SECRET || 'RY_M8iZSf86q1bLPsHoGipYCdUc'
-});
 const app = express();
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
