@@ -3,7 +3,14 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const crypto = require("crypto");
+const cloudinary = require('cloudinary').v2;
 
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'devsizx4',
+  api_key: process.env.CLOUDINARY_API_KEY || '632751616349568',
+  api_secret: process.env.CLOUDINARY_API_SECRET || 'RY_M8iZSf86q1bLPsHoGipYCdUc'
+});
 const app = express();
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
@@ -596,6 +603,60 @@ app.get("/", (req, res) => {
     <button id="login-btn">Login</button>
     <div id="login-error" class="error"></div>
   </div>
+  <div id="onboarding-screen" style="display: none;">
+    <div style="max-width: 500px; margin: 50px auto; padding: 20px;">
+      <h1 style="font-size: 24px; margin-bottom: 30px;">Welcome to UCell Terminal</h1>
+      <p style="color: var(--muted); margin-bottom: 30px;">Help us personalize your health tracking</p>
+      
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 8px; font-size: 14px;">What brings you here?</label>
+        <select id="onb-condition" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
+          <option value="">Select condition...</option>
+          <option value="whipple">Whipple surgery recovery</option>
+          <option value="crohns">Crohn's disease</option>
+          <option value="uc">Ulcerative colitis</option>
+          <option value="ibs">IBS</option>
+          <option value="pancreatic">Pancreatic insufficiency</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+
+      <div id="onb-other-condition" style="display: none; margin-bottom: 20px;">
+        <input type="text" id="onb-condition-other" placeholder="Please specify..." style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 8px; font-size: 14px;">Daily medications (comma-separated)</label>
+        <input type="text" id="onb-medications" placeholder="e.g., Creon, Imuran, Humira" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 8px; font-size: 14px;">Biggest GI challenge?</label>
+        <select id="onb-challenge" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
+          <option value="">Select challenge...</option>
+          <option value="diarrhea">Diarrhea</option>
+          <option value="constipation">Constipation</option>
+          <option value="unpredictable">Unpredictable BMs</option>
+          <option value="pain">Pain/cramping</option>
+          <option value="triggers">Identifying triggers</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom: 30px;">
+        <label style="display: block; margin-bottom: 8px; font-size: 14px;">Normal daily bowel movements?</label>
+        <select id="onb-baseline-bms" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
+          <option value="">Select...</option>
+          <option value="1-2">1-2</option>
+          <option value="3-4">3-4</option>
+          <option value="5-6">5-6</option>
+          <option value="7+">7+</option>
+        </select>
+      </div>
+
+      <button id="complete-onboarding-btn" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px; cursor: pointer;">Start Tracking</button>
+      <div id="onboarding-error" class="error" style="margin-top: 10px;"></div>
+    </div>
+  </div>
   <div id="app">
     <div id="input-container">
       <input id="input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="type and press enter" />
@@ -669,17 +730,31 @@ app.get("/", (req, res) => {
       }
     }
 
-    function showApp() {
-      loginScreen.style.display = 'none';
-      app.style.display = 'block';
-      input.focus();
-      loadHistory();
-    }
-
-    loginBtn.addEventListener('click', login);
-    document.getElementById('login-password').addEventListener('keydown', e => {
-      if (e.key === 'Enter') login();
+   async function showApp() {
+  // Check if user has completed onboarding
+  try {
+    const profileRes = await fetch('/api/user-profile', {
+      headers: { 'Authorization': 'Bearer ' + authToken }
     });
+    
+    if (profileRes.ok) {
+      const profile = await profileRes.json();
+      if (!profile.hasProfile) {
+        // Show onboarding instead of app
+        loginScreen.style.display = 'none';
+        document.getElementById('onboarding-screen').style.display = 'block';
+        return;
+      }
+    }
+  } catch (err) {
+    console.error('Profile check failed:', err);
+  }
+  
+  loginScreen.style.display = 'none';
+  app.style.display = 'block';
+  input.focus();
+  loadHistory();
+}
 
     function renderEntry(entry) {
       const div = document.createElement("div");
@@ -942,6 +1017,60 @@ if (medicalHistoryBtn) {
         });
       }
     });
+// Handle onboarding form
+    const onboardingScreen = document.getElementById('onboarding-screen');
+    const completeOnboardingBtn = document.getElementById('complete-onboarding-btn');
+    const onboardingError = document.getElementById('onboarding-error');
+    const onbCondition = document.getElementById('onb-condition');
+    const onbOtherCondition = document.getElementById('onb-other-condition');
+    
+    onbCondition.addEventListener('change', () => {
+      if (onbCondition.value === 'other') {
+        onbOtherCondition.style.display = 'block';
+      } else {
+        onbOtherCondition.style.display = 'none';
+      }
+    });
+    
+    completeOnboardingBtn.addEventListener('click', async () => {
+      const condition = onbCondition.value;
+      const conditionOther = document.getElementById('onb-condition-other').value;
+      const medications = document.getElementById('onb-medications').value;
+      const challenge = document.getElementById('onb-challenge').value;
+      const baselineBMs = document.getElementById('onb-baseline-bms').value;
+      
+      if (!condition || !challenge || !baselineBMs) {
+        onboardingError.textContent = 'Please complete all required fields';
+        return;
+      }
+      
+      if (condition === 'other' && !conditionOther) {
+        onboardingError.textContent = 'Please specify your condition';
+        return;
+      }
+      
+      try {
+        const res = await fetch('/api/onboarding', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + authToken,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ condition, conditionOther, medications, challenge, baselineBMs })
+        });
+        
+        if (res.ok) {
+          onboardingScreen.style.display = 'none';
+          app.style.display = 'block';
+          input.focus();
+          loadHistory();
+        } else {
+          onboardingError.textContent = 'Failed to save profile';
+        }
+      } catch (err) {
+        onboardingError.textContent = 'Network error';
+      }
+    });
 
     checkAuth().then(authenticated => {
       if (authenticated) {
@@ -959,6 +1088,40 @@ app.get("/logs", requireAuth, (req, res) => {
   const userLogs = allLogs.filter(log => log.user === req.user);
   res.json(userLogs);
 });
+app.post("/api/onboarding", requireAuth, (req, res) => {
+  const { condition, conditionOther, medications, challenge, baselineBMs } = req.body;
+  
+  if (!condition || !challenge || !baselineBMs) {
+    return res.status(400).json({ error: 'Please complete all required fields' });
+  }
+  
+  const PROFILES_FILE = path.join(__dirname, 'user_profiles.json');
+  const profiles = readJSON(PROFILES_FILE, {});
+  
+  profiles[req.user] = {
+    condition: condition === 'other' ? conditionOther : condition,
+    medications: medications || '',
+    challenge,
+    baselineBMs,
+    completedAt: new Date().toISOString()
+  };
+  
+  writeJSON(PROFILES_FILE, profiles);
+  
+  res.json({ ok: true });
+});
+app.get("/api/user-profile", requireAuth, (req, res) => {
+  const PROFILES_FILE = path.join(__dirname, 'user_profiles.json');
+  const profiles = readJSON(PROFILES_FILE, {});
+  
+  if (profiles[req.user]) {
+    res.json({ hasProfile: true, profile: profiles[req.user] });
+  } else {
+    res.json({ hasProfile: false });
+  }
+});
+
+
 app.get("/medical-records", requireAuth, (req, res) => {
   const MEDICAL_RECORDS_FILE = path.join(__dirname, 'medical_records.json');
   const records = readJSON(MEDICAL_RECORDS_FILE, []);
