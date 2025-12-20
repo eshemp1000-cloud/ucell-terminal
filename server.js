@@ -216,8 +216,7 @@ async function analyzeImage(imagePath) {
             image: { content: base64Image },
             features: [
               { type: 'LABEL_DETECTION', maxResults: 10 },
-              { type: 'OBJECT_LOCALIZATION', maxResults: 10 },
-              { type: 'IMAGE_PROPERTIES' }
+              { type: 'OBJECT_LOCALIZATION', maxResults: 10 }
             ]
           }]
         })
@@ -232,52 +231,24 @@ async function analyzeImage(imagePath) {
 
     const labels = data.responses[0].labelAnnotations || [];
     const objects = data.responses[0].localizedObjectAnnotations || [];
-    const colors = data.responses[0].imagePropertiesAnnotation?.dominantColors?.colors || [];
     
     const detectedLabels = labels.map(l => l.description.toLowerCase());
     const detectedObjects = objects.map(o => o.name.toLowerCase());
     const allDetected = [...detectedLabels, ...detectedObjects];
 
-    // Check for brown/tan colors (strong indicator of stool)
-    const hasBrownColor = colors.some(color => {
-      const r = color.color.red || 0;
-      const g = color.color.green || 0;
-      const b = color.color.blue || 0;
-      // Brown/tan color range
-      return (r > 100 && r < 200 && g > 70 && g < 150 && b > 30 && b < 100);
-    });
+    const foodKeywords = ['food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
+                          'pizza', 'pasta', 'rice', 'vegetable', 'fruit', 'meat', 'plate',
+                          'bowl', 'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner'];
+    
+    const stoolKeywords = ['toilet', 'bathroom', 'stool', 'feces', 'bowl'];
 
-    // Enhanced stool detection keywords
-    const stoolKeywords = [
-      'toilet', 'bathroom', 'feces', 'excrement', 'waste',
-      'defecation', 'bowel', 'restroom', 'lavatory', 'water closet',
-      'porcelain', 'ceramic', 'flush', 'commode'
-    ];
-
-    const foodKeywords = [
-      'food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
-      'pizza', 'pasta', 'rice', 'vegetable', 'fruit', 'meat', 'plate',
-      'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner', 'snack',
-      'dessert', 'bread', 'cheese', 'chicken', 'beef', 'pork', 'fish'
-    ];
-
-    // Check for stool FIRST (before food)
-    const stoolMatches = allDetected.filter(item => 
-      stoolKeywords.some(kw => item.includes(kw))
-    );
-
-    // If we have toilet/bathroom keywords OR brown color, it's stool
-    if (stoolMatches.length > 0 || hasBrownColor) {
-      return analyzeStoolImage(allDetected);
-    }
-
-    // Then check for food
-    const isFood = allDetected.some(item => 
-      foodKeywords.some(kw => item.includes(kw))
-    );
+    const isFood = allDetected.some(item => foodKeywords.some(kw => item.includes(kw)));
+    const isStool = allDetected.some(item => stoolKeywords.some(kw => item.includes(kw)));
 
     if (isFood) {
       return analyzeFoodImage(allDetected, labels);
+    } else if (isStool) {
+      return analyzeStoolImage(allDetected);
     } else {
       return {
         type: 'photo',
@@ -596,60 +567,6 @@ app.get("/", (req, res) => {
     <button id="login-btn">Login</button>
     <div id="login-error" class="error"></div>
   </div>
-  <div id="onboarding-screen" style="display: none;">
-    <div style="max-width: 500px; margin: 50px auto; padding: 20px;">
-      <h1 style="font-size: 24px; margin-bottom: 30px;">Welcome to UCell Terminal</h1>
-      <p style="color: var(--muted); margin-bottom: 30px;">Help us personalize your health tracking</p>
-      
-      <div style="margin-bottom: 20px;">
-        <label style="display: block; margin-bottom: 8px; font-size: 14px;">What brings you here?</label>
-        <select id="onb-condition" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
-          <option value="">Select condition...</option>
-          <option value="whipple">Whipple surgery recovery</option>
-          <option value="crohns">Crohn's disease</option>
-          <option value="uc">Ulcerative colitis</option>
-          <option value="ibs">IBS</option>
-          <option value="pancreatic">Pancreatic insufficiency</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-
-      <div id="onb-other-condition" style="display: none; margin-bottom: 20px;">
-        <input type="text" id="onb-condition-other" placeholder="Please specify..." style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
-      </div>
-
-      <div style="margin-bottom: 20px;">
-        <label style="display: block; margin-bottom: 8px; font-size: 14px;">Daily medications (comma-separated)</label>
-        <input type="text" id="onb-medications" placeholder="e.g., Creon, Imuran, Humira" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
-      </div>
-
-      <div style="margin-bottom: 20px;">
-        <label style="display: block; margin-bottom: 8px; font-size: 14px;">Biggest GI challenge?</label>
-        <select id="onb-challenge" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
-          <option value="">Select challenge...</option>
-          <option value="diarrhea">Diarrhea</option>
-          <option value="constipation">Constipation</option>
-          <option value="unpredictable">Unpredictable BMs</option>
-          <option value="pain">Pain/cramping</option>
-          <option value="triggers">Identifying triggers</option>
-        </select>
-      </div>
-
-      <div style="margin-bottom: 30px;">
-        <label style="display: block; margin-bottom: 8px; font-size: 14px;">Normal daily bowel movements?</label>
-        <select id="onb-baseline-bms" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px;">
-          <option value="">Select...</option>
-          <option value="1-2">1-2</option>
-          <option value="3-4">3-4</option>
-          <option value="5-6">5-6</option>
-          <option value="7+">7+</option>
-        </select>
-      </div>
-
-      <button id="complete-onboarding-btn" style="width: 100%; padding: 12px; background: transparent; border: 1px solid var(--hairline); color: var(--fg); font-family: inherit; font-size: 16px; cursor: pointer;">Start Tracking</button>
-      <div id="onboarding-error" class="error" style="margin-top: 10px;"></div>
-    </div>
-  </div>
   <div id="app">
     <div id="input-container">
       <input id="input" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="type and press enter" />
@@ -659,7 +576,7 @@ app.get("/", (req, res) => {
       <button class="upload-option" id="photo-btn">📷 Photo</button>
       <button class="upload-option" id="file-btn">📄 File</button>
     </div>
-    <input type="file" id="photo-input" accept="image/*" class="hidden">
+    <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
     <input type="file" id="file-input" accept=".pdf,.doc,.docx,.txt" class="hidden">
     <div id="timeline"></div>
     <div id="brand" style="font-size: 18px; padding: 15px; cursor: pointer;">UCell</div>
@@ -723,31 +640,17 @@ app.get("/", (req, res) => {
       }
     }
 
-   async function showApp() {
-  // Check if user has completed onboarding
-  try {
-    const profileRes = await fetch('/api/user-profile', {
-      headers: { 'Authorization': 'Bearer ' + authToken }
-    });
-    
-    if (profileRes.ok) {
-      const profile = await profileRes.json();
-      if (!profile.hasProfile) {
-        // Show onboarding instead of app
-        loginScreen.style.display = 'none';
-        document.getElementById('onboarding-screen').style.display = 'block';
-        return;
-      }
+    function showApp() {
+      loginScreen.style.display = 'none';
+      app.style.display = 'block';
+      input.focus();
+      loadHistory();
     }
-  } catch (err) {
-    console.error('Profile check failed:', err);
-  }
-  
-  loginScreen.style.display = 'none';
-  app.style.display = 'block';
-  input.focus();
-  loadHistory();
-}
+
+    loginBtn.addEventListener('click', login);
+    document.getElementById('login-password').addEventListener('keydown', e => {
+      if (e.key === 'Enter') login();
+    });
 
     function renderEntry(entry) {
       const div = document.createElement("div");
@@ -1010,60 +913,6 @@ if (medicalHistoryBtn) {
         });
       }
     });
-// Handle onboarding form
-    const onboardingScreen = document.getElementById('onboarding-screen');
-    const completeOnboardingBtn = document.getElementById('complete-onboarding-btn');
-    const onboardingError = document.getElementById('onboarding-error');
-    const onbCondition = document.getElementById('onb-condition');
-    const onbOtherCondition = document.getElementById('onb-other-condition');
-    
-    onbCondition.addEventListener('change', () => {
-      if (onbCondition.value === 'other') {
-        onbOtherCondition.style.display = 'block';
-      } else {
-        onbOtherCondition.style.display = 'none';
-      }
-    });
-    
-    completeOnboardingBtn.addEventListener('click', async () => {
-      const condition = onbCondition.value;
-      const conditionOther = document.getElementById('onb-condition-other').value;
-      const medications = document.getElementById('onb-medications').value;
-      const challenge = document.getElementById('onb-challenge').value;
-      const baselineBMs = document.getElementById('onb-baseline-bms').value;
-      
-      if (!condition || !challenge || !baselineBMs) {
-        onboardingError.textContent = 'Please complete all required fields';
-        return;
-      }
-      
-      if (condition === 'other' && !conditionOther) {
-        onboardingError.textContent = 'Please specify your condition';
-        return;
-      }
-      
-      try {
-        const res = await fetch('/api/onboarding', {
-          method: 'POST',
-          headers: {
-            'Authorization': 'Bearer ' + authToken,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ condition, conditionOther, medications, challenge, baselineBMs })
-        });
-        
-        if (res.ok) {
-          onboardingScreen.style.display = 'none';
-          app.style.display = 'block';
-          input.focus();
-          loadHistory();
-        } else {
-          onboardingError.textContent = 'Failed to save profile';
-        }
-      } catch (err) {
-        onboardingError.textContent = 'Network error';
-      }
-    });
 
     checkAuth().then(authenticated => {
       if (authenticated) {
@@ -1081,40 +930,6 @@ app.get("/logs", requireAuth, (req, res) => {
   const userLogs = allLogs.filter(log => log.user === req.user);
   res.json(userLogs);
 });
-app.post("/api/onboarding", requireAuth, (req, res) => {
-  const { condition, conditionOther, medications, challenge, baselineBMs } = req.body;
-  
-  if (!condition || !challenge || !baselineBMs) {
-    return res.status(400).json({ error: 'Please complete all required fields' });
-  }
-  
-  const PROFILES_FILE = path.join(__dirname, 'user_profiles.json');
-  const profiles = readJSON(PROFILES_FILE, {});
-  
-  profiles[req.user] = {
-    condition: condition === 'other' ? conditionOther : condition,
-    medications: medications || '',
-    challenge,
-    baselineBMs,
-    completedAt: new Date().toISOString()
-  };
-  
-  writeJSON(PROFILES_FILE, profiles);
-  
-  res.json({ ok: true });
-});
-app.get("/api/user-profile", requireAuth, (req, res) => {
-  const PROFILES_FILE = path.join(__dirname, 'user_profiles.json');
-  const profiles = readJSON(PROFILES_FILE, {});
-  
-  if (profiles[req.user]) {
-    res.json({ hasProfile: true, profile: profiles[req.user] });
-  } else {
-    res.json({ hasProfile: false });
-  }
-});
-
-
 app.get("/medical-records", requireAuth, (req, res) => {
   const MEDICAL_RECORDS_FILE = path.join(__dirname, 'medical_records.json');
   const records = readJSON(MEDICAL_RECORDS_FILE, []);
@@ -1142,11 +957,7 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   let logText = req.body.text || "File uploaded";
   if (fileType === "image") {
     analysisResult = await analyzeImage(filePath);
-    if (analysisResult.type === 'stool' && analysisResult.bristolScale) {
-      logText = 'Stool logged - ' + analysisResult.bristolScale.description;
-    } else {
-      logText = analysisResult.analysis || "Photo uploaded";
-    }
+    logText = analysisResult.analysis || "Photo uploaded";
   }
   allLogs.push({
     ts, user: req.user, role: "user", text: logText,
