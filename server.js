@@ -77,6 +77,7 @@ function deleteSession(token) {
   delete sessions[token];
   writeJSON(SESSIONS_FILE, sessions);
 }
+
 function requireAuth(req, res, next) {
   const token = req.headers['authorization']?.replace('Bearer ', '');
   const session = getSession(token);
@@ -201,6 +202,7 @@ app.delete("/api/admin/users/:username", requireAuth, requireAdmin, (req, res) =
   
   res.json({ ok: true });
 });
+
 async function analyzeImage(imagePath) {
   try {
     const imageBuffer = fs.readFileSync(imagePath);
@@ -216,7 +218,8 @@ async function analyzeImage(imagePath) {
             image: { content: base64Image },
             features: [
               { type: 'LABEL_DETECTION', maxResults: 10 },
-              { type: 'OBJECT_LOCALIZATION', maxResults: 10 }
+              { type: 'OBJECT_LOCALIZATION', maxResults: 10 },
+              { type: 'IMAGE_PROPERTIES' }
             ]
           }]
         })
@@ -231,24 +234,46 @@ async function analyzeImage(imagePath) {
 
     const labels = data.responses[0].labelAnnotations || [];
     const objects = data.responses[0].localizedObjectAnnotations || [];
+    const colors = data.responses[0].imagePropertiesAnnotation?.dominantColors?.colors || [];
     
     const detectedLabels = labels.map(l => l.description.toLowerCase());
     const detectedObjects = objects.map(o => o.name.toLowerCase());
     const allDetected = [...detectedLabels, ...detectedObjects];
 
-    const foodKeywords = ['food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
-                          'pizza', 'pasta', 'rice', 'vegetable', 'fruit', 'meat', 'plate',
-                          'bowl', 'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner'];
-    
-    const stoolKeywords = ['toilet', 'bathroom', 'stool', 'feces', 'bowl'];
+    const hasBrownColor = colors.some(color => {
+      const r = color.color.red || 0;
+      const g = color.color.green || 0;
+      const b = color.color.blue || 0;
+      return (r > 100 && r < 200 && g > 70 && g < 150 && b > 30 && b < 100);
+    });
 
-    const isFood = allDetected.some(item => foodKeywords.some(kw => item.includes(kw)));
-    const isStool = allDetected.some(item => stoolKeywords.some(kw => item.includes(kw)));
+    const stoolKeywords = [
+      'toilet', 'bathroom', 'feces', 'excrement', 'waste',
+      'defecation', 'bowel', 'restroom', 'lavatory', 'water closet',
+      'porcelain', 'ceramic', 'flush', 'commode'
+    ];
+
+    const foodKeywords = [
+      'food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
+      'pizza', 'pasta', 'rice', 'vegetable', 'fruit', 'meat', 'plate',
+      'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner', 'snack',
+      'dessert', 'bread', 'cheese', 'chicken', 'beef', 'pork', 'fish'
+    ];
+
+    const stoolMatches = allDetected.filter(item => 
+      stoolKeywords.some(kw => item.includes(kw))
+    );
+
+    if (stoolMatches.length > 0 || hasBrownColor) {
+      return analyzeStoolImage(allDetected);
+    }
+
+    const isFood = allDetected.some(item => 
+      foodKeywords.some(kw => item.includes(kw))
+    );
 
     if (isFood) {
       return analyzeFoodImage(allDetected, labels);
-    } else if (isStool) {
-      return analyzeStoolImage(allDetected);
     } else {
       return {
         type: 'photo',
@@ -307,14 +332,11 @@ function analyzeFoodImage(detected, labels) {
 }
 
 async function analyzeStoolImage(detected) {
-  // Bristol Stool Scale Classification
   let bristolType = null;
   let bristolDescription = '';
   
-  // Analyze consistency from detected labels
   const labelText = detected.join(' ').toLowerCase();
   
-  // Bristol Scale Type determination based on keywords
   if (labelText.includes('hard') || labelText.includes('lumpy') || labelText.includes('pellet')) {
     bristolType = labelText.includes('separate') ? 1 : 2;
     bristolDescription = bristolType === 1 
@@ -336,7 +358,6 @@ async function analyzeStoolImage(detected) {
     bristolType = 7;
     bristolDescription = 'Type 7: Entirely liquid (severe diarrhea)';
   } else {
-    // Default to Type 4 if unclear
     bristolType = 4;
     bristolDescription = 'Type 4: Smooth and soft (normal/default)';
   }
@@ -351,6 +372,7 @@ async function analyzeStoolImage(detected) {
     analysis: `Stool logged - ${bristolDescription}`
   };
 }
+
 app.get("/", (req, res) => {
   res.send(`
 <!doctype html>
@@ -404,6 +426,7 @@ app.get("/", (req, res) => {
       font-family: inherit;
       font-size: 16px;
       cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
     }
     #login-screen button:active {
       background: rgba(233, 238, 247, 0.05);
@@ -564,7 +587,7 @@ app.get("/", (req, res) => {
     <h1>UCell</h1>
     <input type="text" id="login-username" placeholder="Username" autocomplete="username">
     <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
-    <button id="login-btn">Login</button>
+    <button id="login-btn" type="button">Login</button>
     <div id="login-error" class="error"></div>
   </div>
   <div id="app">
@@ -576,11 +599,10 @@ app.get("/", (req, res) => {
       <button class="upload-option" id="photo-btn">📷 Photo</button>
       <button class="upload-option" id="file-btn">📄 File</button>
     </div>
-    <input type="file" id="photo-input" accept="image/*" capture="environment" class="hidden">
+    <input type="file" id="photo-input" accept="image/*" class="hidden">
     <input type="file" id="file-input" accept=".pdf,.doc,.docx,.txt" class="hidden">
     <div id="timeline"></div>
     <div id="brand" style="font-size: 18px; padding: 15px; cursor: pointer;">UCell</div>
-    
   </div>
   <script>
     let authToken = localStorage.getItem('ucell_token');
@@ -610,7 +632,9 @@ app.get("/", (req, res) => {
           isAdmin = data.isAdmin;
           return true;
         }
-      } catch {}
+      } catch (err) {
+        console.error('Auth check failed:', err);
+      }
       authToken = null;
       localStorage.removeItem('ucell_token');
       return false;
@@ -635,8 +659,9 @@ app.get("/", (req, res) => {
         } else {
           loginError.textContent = 'Invalid username or password';
         }
-      } catch {
-        loginError.textContent = 'Login failed';
+      } catch (err) {
+        console.error('Login error:', err);
+        loginError.textContent = 'Login failed - check connection';
       }
     }
 
@@ -647,9 +672,21 @@ app.get("/", (req, res) => {
       loadHistory();
     }
 
-    loginBtn.addEventListener('click', login);
-    document.getElementById('login-password').addEventListener('keydown', e => {
-      if (e.key === 'Enter') login();
+    loginBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      login();
+    });
+    
+    loginBtn.addEventListener('touchend', function(e) {
+      e.preventDefault();
+      login();
+    });
+    
+    document.getElementById('login-password').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        login();
+      }
     });
 
     function renderEntry(entry) {
@@ -686,25 +723,27 @@ app.get("/", (req, res) => {
             timeline.appendChild(div);
           }
         }
-      } catch {}
+      } catch (err) {
+        console.error('Load history failed:', err);
+      }
     }
 
-    addBtn.addEventListener("click", () => {
+    addBtn.addEventListener("click", function() {
       uploadMenu.classList.toggle("active");
     });
 
-    document.addEventListener("click", (e) => {
+    document.addEventListener("click", function(e) {
       if (!addBtn.contains(e.target) && !uploadMenu.contains(e.target)) {
         uploadMenu.classList.remove("active");
       }
     });
 
-    photoBtn.addEventListener("click", () => {
+    photoBtn.addEventListener("click", function() {
       photoInput.click();
       uploadMenu.classList.remove("active");
     });
 
-    photoInput.addEventListener("change", async (e) => {
+    photoInput.addEventListener("change", async function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const analyzingDiv = document.createElement("div");
@@ -728,12 +767,12 @@ app.get("/", (req, res) => {
       photoInput.value = "";
     });
 
-    fileBtn.addEventListener("click", () => {
+    fileBtn.addEventListener("click", function() {
       fileInput.click();
       uploadMenu.classList.remove("active");
     });
 
-    fileInput.addEventListener("change", async (e) => {
+    fileInput.addEventListener("change", async function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const formData = new FormData();
@@ -756,10 +795,10 @@ app.get("/", (req, res) => {
 
     let tapCount = 0;
     let tapTimer = null;
-    brand.addEventListener("click", () => {
+    brand.addEventListener("click", function() {
       tapCount++;
       if (tapCount === 1) {
-        tapTimer = setTimeout(() => { tapCount = 0; }, 1000);
+        tapTimer = setTimeout(function() { tapCount = 0; }, 1000);
       }
       if (tapCount === 3) {
         clearTimeout(tapTimer);
@@ -767,46 +806,7 @@ app.get("/", (req, res) => {
         openDashboard();
       }
     });
-// Medical History button
-const medicalHistoryBtn = document.getElementById('medical-history-btn');
-if (medicalHistoryBtn) {
-  medicalHistoryBtn.addEventListener('click', async () => {
-    try {
-      const res = await fetch('/medical-records', {
-        headers: { 'Authorization': 'Bearer ' + authToken }
-      });
-      const records = await res.json();
-      
-      if (!records || records.length === 0) {
-        alert('No medical records found');
-        return;
-      }
-      
-      // Build HTML
-      let html = '<div style="padding: 20px; max-width: 800px; margin: 0 auto;">';
-      html += '<h2 style="color: var(--fg); margin-bottom: 30px;">Medical History</h2>';
-      
-      records.forEach(record => {
-        html += '<div style="margin-bottom: 40px; padding: 20px; border: 1px solid var(--hairline); border-radius: 8px;">';
-        html += '<h3 style="color: var(--fg); margin-bottom: 15px;">' + record.filename + '</h3>';
-        html += '<div style="color: var(--fg); line-height: 1.6; white-space: pre-wrap;">' + record.summary + '</div>';
-        html += '</div>';
-      });
-      
-      html += '<button id="back-to-terminal" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; cursor: pointer; margin-top: 20px;">Back to Terminal</button>';
-      html += '</div>';
-      
-      document.body.innerHTML = html;
-      
-      document.getElementById('back-to-terminal').addEventListener('click', () => {
-        location.reload();
-      });
-      
-    } catch (err) {
-      alert('Failed to load medical records');
-    }
-  });
-}
+
     async function openDashboard() {
       if (isAdmin) {
         showAdminPanel();
@@ -820,33 +820,12 @@ if (medicalHistoryBtn) {
         headers: { 'Authorization': 'Bearer ' + authToken }
       });
       const logs = await res.json();
-      const userLogs = logs.filter(e => e.role === "user");
-      const days = new Set(userLogs.map(e => e.ts.split("T")[0])).size;
-     document.body.innerHTML = '<div style="padding: 20px; text-align: center;"><div style="font-size: 48px; margin-bottom: 20px; color: var(--fg);">' + userLogs.length + '</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">entries logged</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 40px;">active for ' + days + ' days</div><button id="medical-history-dashboard" style="margin-bottom: 15px; padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer; display: block; margin-left: auto; margin-right: auto;">Medical History</button><button id="back" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer;">Back to Terminal</button></div>';
-      document.getElementById("back").addEventListener("click", () => {
+      const userLogs = logs.filter(function(e) { return e.role === "user"; });
+      const days = new Set(userLogs.map(function(e) { return e.ts.split("T")[0]; })).size;
+      document.body.innerHTML = '<div style="padding: 20px; text-align: center;"><div style="font-size: 48px; margin-bottom: 20px; color: var(--fg);">' + userLogs.length + '</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">entries logged</div><div style="font-size: 14px; color: var(--muted); margin-bottom: 40px;">active for ' + days + ' days</div><button id="back" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); font-family: inherit; font-size: 14px; cursor: pointer;">Back to Terminal</button></div>';
+      document.getElementById("back").addEventListener("click", function() {
         location.reload();
       });
-      document.getElementById("medical-history-dashboard").addEventListener("click", async () => {
-      const res = await fetch('/medical-records', {
-        headers: { 'Authorization': 'Bearer ' + authToken }
-      });
-      const records = await res.json();
-      
-      let html = '<div style="padding: 20px; max-width: 800px; margin: 0 auto;">';
-      html += '<h2 style="color: var(--fg); margin-bottom: 30px;">Medical History</h2>';
-      
-      records.forEach(record => {
-        html += '<div style="margin-bottom: 40px; padding: 20px; border: 1px solid var(--hairline); border-radius: 8px;">';
-        html += '<h3 style="color: var(--fg); margin-bottom: 15px;">' + record.filename + '</h3>';
-        html += '<div style="color: var(--fg); line-height: 1.6; white-space: pre-wrap;">' + record.summary + '</div>';
-        html += '</div>';
-      });
-      
-      html += '<button id="back-to-dashboard" style="padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); cursor: pointer;">Back</button></div>';
-      
-      document.body.innerHTML = html;
-      document.getElementById('back-to-dashboard').addEventListener('click', () => location.reload());
-    });
     }
 
     async function showAdminPanel() {
@@ -854,11 +833,11 @@ if (medicalHistoryBtn) {
         headers: { 'Authorization': 'Bearer ' + authToken }
       });
       const users = await res.json();
-      document.body.innerHTML = '<div id="admin-panel"><h2>Admin Panel</h2><div class="user-list"><h3>Users</h3>' + users.map(u => '<div class="user-item"><span>' + u.username + (u.isAdmin ? ' (Admin)' : '') + '</span>' + (!u.isAdmin ? '<button class="delete-btn" data-username="' + u.username + '">Delete</button>' : '') + '</div>').join('') + '</div><div class="add-user-form"><h3>Add New User</h3><input type="text" id="new-username" placeholder="Username"><input type="password" id="new-password" placeholder="Temporary Password"><button id="add-user-btn">Add User</button></div><button id="back-admin" style="margin-top: 30px; padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); cursor: pointer;">Back to Terminal</button></div>';
-      document.getElementById("back-admin").addEventListener("click", () => {
+      document.body.innerHTML = '<div id="admin-panel"><h2>Admin Panel</h2><div class="user-list"><h3>Users</h3>' + users.map(function(u) { return '<div class="user-item"><span>' + u.username + (u.isAdmin ? ' (Admin)' : '') + '</span>' + (!u.isAdmin ? '<button class="delete-btn" data-username="' + u.username + '">Delete</button>' : '') + '</div>'; }).join('') + '</div><div class="add-user-form"><h3>Add New User</h3><input type="text" id="new-username" placeholder="Username"><input type="password" id="new-password" placeholder="Temporary Password"><button id="add-user-btn">Add User</button></div><button id="back-admin" style="margin-top: 30px; padding: 12px 24px; background: transparent; color: var(--fg); border: 1px solid var(--hairline); cursor: pointer;">Back to Terminal</button></div>';
+      document.getElementById("back-admin").addEventListener("click", function() {
         location.reload();
       });
-      document.getElementById("add-user-btn").addEventListener("click", async () => {
+      document.getElementById("add-user-btn").addEventListener("click", async function() {
         const username = document.getElementById("new-username").value;
         const password = document.getElementById("new-password").value;
         const res = await fetch('/api/admin/users', {
@@ -867,7 +846,7 @@ if (medicalHistoryBtn) {
             'Authorization': 'Bearer ' + authToken,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ username, password })
+          body: JSON.stringify({ username: username, password: password })
         });
         if (res.ok) {
           alert('User ' + username + ' created with password: ' + password);
@@ -876,8 +855,8 @@ if (medicalHistoryBtn) {
           alert('Failed to create user');
         }
       });
-      document.querySelectorAll('.delete-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
+      document.querySelectorAll('.delete-btn').forEach(function(btn) {
+        btn.addEventListener('click', async function() {
           const username = btn.dataset.username;
           if (confirm('Delete user ' + username + '?')) {
             await fetch('/api/admin/users/' + username, {
@@ -890,7 +869,7 @@ if (medicalHistoryBtn) {
       });
     }
 
-    input.addEventListener("keydown", e => {
+    input.addEventListener("keydown", function(e) {
       if (e.key === "Enter") {
         const text = input.value.trim();
         if (!text) return;
@@ -909,15 +888,17 @@ if (medicalHistoryBtn) {
             'Authorization': 'Bearer ' + authToken,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ text })
+          body: JSON.stringify({ text: text })
         });
       }
     });
 
-    checkAuth().then(authenticated => {
+    checkAuth().then(function(authenticated) {
       if (authenticated) {
         showApp();
       }
+    }).catch(function(err) {
+      console.error('Startup auth check failed:', err);
     });
   </script>
 </body>
@@ -930,6 +911,7 @@ app.get("/logs", requireAuth, (req, res) => {
   const userLogs = allLogs.filter(log => log.user === req.user);
   res.json(userLogs);
 });
+
 app.get("/medical-records", requireAuth, (req, res) => {
   const MEDICAL_RECORDS_FILE = path.join(__dirname, 'medical_records.json');
   const records = readJSON(MEDICAL_RECORDS_FILE, []);
@@ -957,7 +939,11 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   let logText = req.body.text || "File uploaded";
   if (fileType === "image") {
     analysisResult = await analyzeImage(filePath);
-    logText = analysisResult.analysis || "Photo uploaded";
+    if (analysisResult.type === 'stool' && analysisResult.bristolScale) {
+      logText = 'Stool logged - ' + analysisResult.bristolScale.description;
+    } else {
+      logText = analysisResult.analysis || "Photo uploaded";
+    }
   }
   allLogs.push({
     ts, user: req.user, role: "user", text: logText,
@@ -968,94 +954,7 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   writeJSON(DATA_FILE, allLogs);
   res.json({ ok: true });
 });
-// Medical record upload endpoint
-app.post("/upload-medical-record", requireAuth, upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
-  }
 
-  if (req.file.mimetype !== 'application/pdf') {
-    return res.status(400).json({ error: 'Only PDF files are supported' });
-  }
-
-  try {
-    const pdfParse = require('pdf-parse');
-    const pdfBuffer = fs.readFileSync(req.file.path);
-    const pdfData = await pdfParse(pdfBuffer);
-    const extractedText = pdfData.text;
-
-    // Parse with Claude API
-    const parseResponse = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY || 'YOUR_KEY_HERE',
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2000,
-        messages: [{
-          role: 'user',
-          content: `Parse this medical document and extract key information. Return ONLY a JSON object with these fields:
-          
-{
-  "document_type": "lab_result" | "imaging_report" | "clinical_note" | "discharge_summary" | "other",
-  "date_of_service": "YYYY-MM-DD",
-  "provider": "provider name",
-  "key_findings": "brief summary",
-  "metrics": {} // any numeric values like lab results
-}
-
-Document text:
-${extractedText}`
-        }]
-      })
-    });
-
-    const parseData = await parseResponse.json();
-    let parsedRecord = {};
-    
-    try {
-      const responseText = parseData.content[0].text;
-      parsedRecord = JSON.parse(responseText);
-    } catch {
-      parsedRecord = {
-        document_type: 'other',
-        date_of_service: new Date().toISOString().split('T')[0],
-        provider: 'Unknown',
-        key_findings: 'Could not parse',
-        metrics: {}
-      };
-    }
-
-    // Store in medical_records.json
-    const MEDICAL_RECORDS_FILE = path.join(__dirname, 'medical_records.json');
-    const allRecords = readJSON(MEDICAL_RECORDS_FILE, []);
-    
-    allRecords.push({
-      id: Date.now().toString(),
-      user: req.user,
-      filename: req.file.originalname,
-      filepath: req.file.path,
-      uploaded_at: new Date().toISOString(),
-      parsed_data: parsedRecord,
-      raw_text: extractedText.substring(0, 5000) // Store first 5000 chars
-    });
-
-    writeJSON(MEDICAL_RECORDS_FILE, allRecords);
-
-    res.json({ 
-      ok: true, 
-      message: 'Medical record uploaded and parsed',
-      parsed: parsedRecord
-    });
-
-  } catch (error) {
-    console.error('Medical record processing error:', error);
-    res.status(500).json({ error: 'Failed to process medical record' });
-  }
-});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`UCell Terminal running at http://localhost:${PORT}`);
