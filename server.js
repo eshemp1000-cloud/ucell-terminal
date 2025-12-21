@@ -264,9 +264,14 @@ async function analyzeImage(imagePath) {
       stoolKeywords.some(kw => item.includes(kw))
     );
 
-    if (stoolMatches.length > 0 || hasBrownColor) {
-      return analyzeStoolImage(allDetected);
-    }
+   const hasToiletIndicator = allDetected.some(item => 
+  item.includes('toilet') || item.includes('bathroom') || 
+  item.includes('porcelain') || item.includes('ceramic') || item.includes('bowl')
+);
+
+if (hasToiletIndicator || hasBrownColor) {
+  return analyzeStoolImage(allDetected);
+}
 
     const isFood = allDetected.some(item => 
       foodKeywords.some(kw => item.includes(kw))
