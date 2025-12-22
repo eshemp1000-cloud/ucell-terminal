@@ -3,16 +3,20 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const crypto = require("crypto");
+const { Pool } = require('pg');
 
 const app = express();
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-const DATA_FILE = path.join(__dirname, "ucell_log.json");
-const USERS_FILE = path.join(__dirname, "users.json");
-const SESSIONS_FILE = path.join(__dirname, "sessions.json");
 const UPLOAD_DIR = path.join(__dirname, "uploads");
 const VISION_API_KEY = "AIzaSyAlU7VoOIFnQ9CNQvIY3fgrAsRK_JJ4xeI";
+
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+});
 
 if (!fs.existsSync(UPLOAD_DIR)) {
   fs.mkdirSync(UPLOAD_DIR);
@@ -30,23 +34,46 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
-function readJSON(filepath, defaultValue = []) {
+// Initialize database
+async function initDatabase() {
   try {
-    if (!fs.existsSync(filepath)) {
-      fs.writeFileSync(filepath, JSON.stringify(defaultValue), "utf8");
-      return defaultValue;
-    }
-    const raw = fs.readFileSync(filepath, "utf8");
-    const parsed = JSON.parse(raw);
-    return Array.isArray(defaultValue) ? (Array.isArray(parsed) ? parsed : defaultValue) : parsed;
-  } catch {
-    return defaultValue;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS logs (
+        id SERIAL PRIMARY KEY,
+        ts TIMESTAMP NOT NULL,
+        username VARCHAR(255) NOT NULL,
+        role VARCHAR(50) NOT NULL,
+        text TEXT,
+        file_name VARCHAR(500),
+        file_original VARCHAR(500),
+        file_type VARCHAR(50),
+        ai_analysis JSONB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      
+      CREATE TABLE IF NOT EXISTS users (
+        username VARCHAR(255) PRIMARY KEY,
+        password VARCHAR(255) NOT NULL,
+        is_admin BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+      
+      CREATE TABLE IF NOT EXISTS sessions (
+        token VARCHAR(255) PRIMARY KEY,
+        username VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_logs_username ON logs(username);
+      CREATE INDEX IF NOT EXISTS idx_logs_ts ON logs(ts DESC);
+    `);
+    console.log('✅ Database tables initialized');
+  } catch (err) {
+    console.error('❌ Database initialization error:', err);
   }
 }
 
-function writeJSON(filepath, data) {
-  fs.writeFileSync(filepath, JSON.stringify(data, null, 2), "utf8");
-}
+initDatabase();
 
 function hashPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
@@ -56,151 +83,161 @@ function generateSessionToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-function getSession(token) {
-  const sessions = readJSON(SESSIONS_FILE, {});
-  return sessions[token] || null;
-}
-
-function createSession(username) {
-  const token = generateSessionToken();
-  const sessions = readJSON(SESSIONS_FILE, {});
-  sessions[token] = {
-    username,
-    createdAt: new Date().toISOString()
-  };
-  writeJSON(SESSIONS_FILE, sessions);
-  return token;
-}
-
-function deleteSession(token) {
-  const sessions = readJSON(SESSIONS_FILE, {});
-  delete sessions[token];
-  writeJSON(SESSIONS_FILE, sessions);
-}
-
-function requireAuth(req, res, next) {
-  const token = req.headers['authorization']?.replace('Bearer ', '');
-  const session = getSession(token);
-  
-  if (!session) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
-  
-  req.user = session.username;
-  next();
-}
-
-function requireAdmin(req, res, next) {
-  const users = readJSON(USERS_FILE, {});
-  const user = users[req.user];
-  
-  if (!user || !user.isAdmin) {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  
-  next();
-}
-
-function initializeUsers() {
-  const users = readJSON(USERS_FILE, {});
-  if (Object.keys(users).length === 0) {
-    users['james'] = {
-      password: hashPassword('ucell2024'),
-      isAdmin: true,
-      createdAt: new Date().toISOString()
-    };
-    writeJSON(USERS_FILE, users);
-    console.log('Created default admin user: james / ucell2024');
+async function initializeUsers() {
+  try {
+    const result = await pool.query('SELECT COUNT(*) FROM users');
+    if (parseInt(result.rows[0].count) === 0) {
+      await pool.query(
+        'INSERT INTO users (username, password, is_admin) VALUES ($1, $2, $3)',
+        ['james', hashPassword('ucell2024'), true]
+      );
+      console.log('✅ Created default admin user: james / ucell2024');
+    }
+  } catch (err) {
+    console.error('User initialization error:', err);
   }
 }
 
 initializeUsers();
 
-app.post("/api/login", (req, res) => {
-  const { username, password } = req.body;
-  
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password required' });
-  }
-  
-  const users = readJSON(USERS_FILE, {});
-  const user = users[username];
-  
-  if (!user || user.password !== hashPassword(password)) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-  
-  const token = createSession(username);
-  
-  res.json({
-    token,
-    username,
-    isAdmin: user.isAdmin || false
-  });
-});
-
-app.post("/api/logout", requireAuth, (req, res) => {
+function requireAuth(req, res, next) {
   const token = req.headers['authorization']?.replace('Bearer ', '');
-  deleteSession(token);
-  res.json({ ok: true });
-});
-
-app.get("/api/me", requireAuth, (req, res) => {
-  const users = readJSON(USERS_FILE, {});
-  const user = users[req.user];
   
-  res.json({
-    username: req.user,
-    isAdmin: user.isAdmin || false
-  });
-});
+  if (!token) {
+    return res.status(401).json({ error: 'Not authenticated' });
+  }
+  
+  pool.query('SELECT username FROM sessions WHERE token = $1', [token])
+    .then(result => {
+      if (result.rows.length === 0) {
+        return res.status(401).json({ error: 'Not authenticated' });
+      }
+      req.user = result.rows[0].username;
+      next();
+    })
+    .catch(err => {
+      console.error('Auth error:', err);
+      res.status(500).json({ error: 'Auth failed' });
+    });
+}
 
-app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
-  const users = readJSON(USERS_FILE, {});
-  const userList = Object.keys(users).map(username => ({
-    username,
-    isAdmin: users[username].isAdmin || false,
-    createdAt: users[username].createdAt
-  }));
-  res.json(userList);
-});
+function requireAdmin(req, res, next) {
+  pool.query('SELECT is_admin FROM users WHERE username = $1', [req.user])
+    .then(result => {
+      if (result.rows.length === 0 || !result.rows[0].is_admin) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      next();
+    })
+    .catch(err => {
+      console.error('Admin check error:', err);
+      res.status(500).json({ error: 'Auth check failed' });
+    });
+}
 
-app.post("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
   
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
   
-  const users = readJSON(USERS_FILE, {});
-  
-  if (users[username]) {
-    return res.status(400).json({ error: 'Username already exists' });
+  try {
+    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+    
+    if (result.rows.length === 0 || result.rows[0].password !== hashPassword(password)) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const token = generateSessionToken();
+    await pool.query('INSERT INTO sessions (token, username) VALUES ($1, $2)', [token, username]);
+    
+    res.json({
+      token,
+      username,
+      isAdmin: result.rows[0].is_admin || false
+    });
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({ error: 'Login failed' });
   }
-  
-  users[username] = {
-    password: hashPassword(password),
-    isAdmin: false,
-    createdAt: new Date().toISOString()
-  };
-  
-  writeJSON(USERS_FILE, users);
-  
-  res.json({ ok: true, username });
 });
 
-app.delete("/api/admin/users/:username", requireAuth, requireAdmin, (req, res) => {
+app.post("/api/logout", requireAuth, async (req, res) => {
+  const token = req.headers['authorization']?.replace('Bearer ', '');
+  try {
+    await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Logout error:', err);
+    res.status(500).json({ error: 'Logout failed' });
+  }
+});
+
+app.get("/api/me", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT is_admin FROM users WHERE username = $1', [req.user]);
+    res.json({
+      username: req.user,
+      isAdmin: result.rows[0]?.is_admin || false
+    });
+  } catch (err) {
+    console.error('Me error:', err);
+    res.status(500).json({ error: 'Failed to get user info' });
+  }
+});
+
+app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT username, is_admin, created_at FROM users ORDER BY created_at DESC');
+    const users = result.rows.map(row => ({
+      username: row.username,
+      isAdmin: row.is_admin,
+      createdAt: row.created_at.toISOString()
+    }));
+    res.json(users);
+  } catch (err) {
+    console.error('Get users error:', err);
+    res.status(500).json({ error: 'Failed to get users' });
+  }
+});
+
+app.post("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
+  const { username, password } = req.body;
+  
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+  
+  try {
+    await pool.query(
+      'INSERT INTO users (username, password, is_admin) VALUES ($1, $2, $3)',
+      [username, hashPassword(password), false]
+    );
+    res.json({ ok: true, username });
+  } catch (err) {
+    if (err.code === '23505') {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+    console.error('Create user error:', err);
+    res.status(500).json({ error: 'Failed to create user' });
+  }
+});
+
+app.delete("/api/admin/users/:username", requireAuth, requireAdmin, async (req, res) => {
   const { username } = req.params;
   
   if (username === req.user) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
   }
   
-  const users = readJSON(USERS_FILE, {});
-  delete users[username];
-  writeJSON(USERS_FILE, users);
-  
-  res.json({ ok: true });
+  try {
+    await pool.query('DELETE FROM users WHERE username = $1', [username]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Delete user error:', err);
+    res.status(500).json({ error: 'Failed to delete user' });
+  }
 });
 
 async function analyzeImage(imagePath) {
@@ -247,11 +284,14 @@ async function analyzeImage(imagePath) {
       return (r > 100 && r < 200 && g > 70 && g < 150 && b > 30 && b < 100);
     });
 
-    const stoolKeywords = [
-      'toilet', 'bathroom', 'feces', 'excrement', 'waste',
-      'defecation', 'bowel', 'restroom', 'lavatory', 'water closet',
-      'porcelain', 'ceramic', 'flush', 'commode'
-    ];
+    const hasToiletIndicator = allDetected.some(item => 
+      item.includes('toilet') || item.includes('bathroom') || 
+      item.includes('porcelain') || item.includes('ceramic') || item.includes('bowl')
+    );
+
+    if (hasToiletIndicator || hasBrownColor) {
+      return analyzeStoolImage(allDetected, colors);
+    }
 
     const foodKeywords = [
       'food', 'dish', 'meal', 'cuisine', 'salad', 'sandwich', 'burger', 
@@ -259,19 +299,6 @@ async function analyzeImage(imagePath) {
       'sushi', 'burrito', 'soup', 'breakfast', 'lunch', 'dinner', 'snack',
       'dessert', 'bread', 'cheese', 'chicken', 'beef', 'pork', 'fish'
     ];
-
-    const stoolMatches = allDetected.filter(item => 
-      stoolKeywords.some(kw => item.includes(kw))
-    );
-
-   const hasToiletIndicator = allDetected.some(item => 
-  item.includes('toilet') || item.includes('bathroom') || 
-  item.includes('porcelain') || item.includes('ceramic') || item.includes('bowl')
-);
-
-if (hasToiletIndicator || hasBrownColor) {
-  return analyzeStoolImage(allDetected);
-}
 
     const isFood = allDetected.some(item => 
       foodKeywords.some(kw => item.includes(kw))
@@ -336,32 +363,58 @@ function analyzeFoodImage(detected, labels) {
   };
 }
 
-async function analyzeStoolImage(detected) {
+async function analyzeStoolImage(detected, colors) {
   let bristolType = null;
   let bristolDescription = '';
   
-  const labelText = detected.join(' ').toLowerCase();
-  
-  if (labelText.includes('hard') || labelText.includes('lumpy') || labelText.includes('pellet')) {
-    bristolType = labelText.includes('separate') ? 1 : 2;
-    bristolDescription = bristolType === 1 
-      ? 'Type 1: Separate hard lumps (severe constipation)'
-      : 'Type 2: Lumpy and sausage-like (mild constipation)';
-  } else if (labelText.includes('crack') || (labelText.includes('sausage') && labelText.includes('surface'))) {
-    bristolType = 3;
-    bristolDescription = 'Type 3: Sausage-shaped with cracks (normal)';
-  } else if (labelText.includes('smooth') && labelText.includes('soft')) {
-    bristolType = 4;
-    bristolDescription = 'Type 4: Smooth and soft (ideal/normal)';
-  } else if (labelText.includes('soft') || labelText.includes('blob') || labelText.includes('fluffy')) {
-    bristolType = 5;
-    bristolDescription = 'Type 5: Soft blobs with clear edges (mild diarrhea)';
-  } else if (labelText.includes('mushy') || labelText.includes('ragged') || labelText.includes('porridge')) {
-    bristolType = 6;
-    bristolDescription = 'Type 6: Mushy with ragged edges (diarrhea)';
-  } else if (labelText.includes('liquid') || labelText.includes('watery') || labelText.includes('diarrhea')) {
-    bristolType = 7;
-    bristolDescription = 'Type 7: Entirely liquid (severe diarrhea)';
+  if (colors && colors.length > 0) {
+    const dominantColor = colors[0].color;
+    const r = dominantColor.red || 0;
+    const g = dominantColor.green || 0;
+    const b = dominantColor.blue || 0;
+    
+    const brightness = (r + g + b) / 3;
+    const yellowness = (r + g) / 2 - b;
+    
+    // Type 7: Very light, yellowish, watery
+    if (brightness > 180 && yellowness > 40) {
+      bristolType = 7;
+      bristolDescription = 'Type 7: Entirely liquid (severe diarrhea)';
+    }
+    // Type 6: Light brown, mushy
+    else if (brightness > 150 && yellowness > 20) {
+      bristolType = 6;
+      bristolDescription = 'Type 6: Mushy with ragged edges (diarrhea)';
+    }
+    // Type 5: Medium-light brown, soft blobs
+    else if (brightness > 120 && r > g && g > b) {
+      bristolType = 5;
+      bristolDescription = 'Type 5: Soft blobs with clear edges (mild diarrhea)';
+    }
+    // Type 3-4: Medium brown (normal range)
+    else if (brightness > 80 && brightness < 130 && r > g && g > b) {
+      if (g - b > 30) {
+        bristolType = 4;
+        bristolDescription = 'Type 4: Smooth and soft (ideal/normal)';
+      } else {
+        bristolType = 3;
+        bristolDescription = 'Type 3: Sausage-shaped with cracks (normal)';
+      }
+    }
+    // Type 2: Dark brown, lumpy
+    else if (brightness < 80 && r > 100) {
+      bristolType = 2;
+      bristolDescription = 'Type 2: Lumpy and sausage-like (mild constipation)';
+    }
+    // Type 1: Very dark, hard
+    else if (brightness < 60) {
+      bristolType = 1;
+      bristolDescription = 'Type 1: Separate hard lumps (severe constipation)';
+    }
+    else {
+      bristolType = 4;
+      bristolDescription = 'Type 4: Smooth and soft (normal/default)';
+    }
   } else {
     bristolType = 4;
     bristolDescription = 'Type 4: Smooth and soft (normal/default)';
@@ -911,37 +964,64 @@ app.get("/", (req, res) => {
   `);
 });
 
-app.get("/logs", requireAuth, (req, res) => {
-  const allLogs = readJSON(DATA_FILE);
-  const userLogs = allLogs.filter(log => log.user === req.user);
-  res.json(userLogs);
+app.get("/logs", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM logs WHERE username = $1 ORDER BY ts DESC',
+      [req.user]
+    );
+    const logs = result.rows.map(row => ({
+      ts: row.ts.toISOString(),
+      user: row.username,
+      role: row.role,
+      text: row.text,
+      file: row.file_name ? {
+        name: row.file_name,
+        original: row.file_original,
+        type: row.file_type
+      } : null,
+      aiAnalysis: row.ai_analysis
+    }));
+    res.json(logs);
+  } catch (err) {
+    console.error('Get logs error:', err);
+    res.status(500).json({ error: 'Failed to get logs' });
+  }
 });
 
-app.get("/medical-records", requireAuth, (req, res) => {
-  const MEDICAL_RECORDS_FILE = path.join(__dirname, 'medical_records.json');
-  const records = readJSON(MEDICAL_RECORDS_FILE, []);
-  res.json(records);
-});
-
-app.post("/log", requireAuth, (req, res) => {
+app.post("/log", requireAuth, async (req, res) => {
   const text = (req.body && typeof req.body.text === "string") ? req.body.text.trim() : "";
   if (!text) return res.status(400).json({ ok: false });
-  const allLogs = readJSON(DATA_FILE);
-  const ts = new Date().toISOString();
-  allLogs.push({ ts, user: req.user, role: "user", text });
-  allLogs.push({ ts, user: req.user, role: "guardian", text: "Noted. We'll watch for patterns." });
-  writeJSON(DATA_FILE, allLogs);
-  res.json({ ok: true });
+  
+  const ts = new Date();
+  
+  try {
+    await pool.query(
+      'INSERT INTO logs (ts, username, role, text) VALUES ($1, $2, $3, $4)',
+      [ts, req.user, 'user', text]
+    );
+    
+    await pool.query(
+      'INSERT INTO logs (ts, username, role, text) VALUES ($1, $2, $3, $4)',
+      [ts, req.user, 'guardian', "Noted. We'll watch for patterns."]
+    );
+    
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Log entry error:', err);
+    res.status(500).json({ error: 'Failed to log entry' });
+  }
 });
 
 app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false });
-  const allLogs = readJSON(DATA_FILE);
-  const ts = new Date().toISOString();
+  
+  const ts = new Date();
   const filePath = path.join(UPLOAD_DIR, req.file.filename);
   const fileType = req.file.mimetype.startsWith("image/") ? "image" : "file";
   let analysisResult = null;
   let logText = req.body.text || "File uploaded";
+  
   if (fileType === "image") {
     analysisResult = await analyzeImage(filePath);
     if (analysisResult.type === 'stool' && analysisResult.bristolScale) {
@@ -950,18 +1030,27 @@ app.post("/upload", requireAuth, upload.single("file"), async (req, res) => {
       logText = analysisResult.analysis || "Photo uploaded";
     }
   }
-  allLogs.push({
-    ts, user: req.user, role: "user", text: logText,
-    file: { name: req.file.filename, original: req.file.originalname, type: fileType },
-    aiAnalysis: analysisResult
-  });
-  allLogs.push({ ts, user: req.user, role: "guardian", text: "Noted. We'll watch for patterns." });
-  writeJSON(DATA_FILE, allLogs);
-  res.json({ ok: true });
+  
+  try {
+    await pool.query(
+      'INSERT INTO logs (ts, username, role, text, file_name, file_original, file_type, ai_analysis) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [ts, req.user, 'user', logText, req.file.filename, req.file.originalname, fileType, JSON.stringify(analysisResult)]
+    );
+    
+    await pool.query(
+      'INSERT INTO logs (ts, username, role, text) VALUES ($1, $2, $3, $4)',
+      [ts, req.user, 'guardian', "Noted. We'll watch for patterns."]
+    );
+    
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Failed to upload file' });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`UCell Terminal running at http://localhost:${PORT}`);
-  console.log('Default admin: james / ucell2024');
+  console.log(`🚀 UCell Terminal running at http://localhost:${PORT}`);
+  console.log('👤 Default admin: james / ucell2024');
 });
