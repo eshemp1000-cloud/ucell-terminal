@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>UCell Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; background: #0a0e12; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
+    .header h1 { font-size: 28px; font-weight: 600; color: #fff; }
+    .range-tabs { display: flex; gap: 10px; flex-wrap: wrap; }
+    .range-tabs button { padding: 10px 20px; border: 1px solid #2a3a4a; background: #151b23; color: #a0b0c0; border-radius: 8px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+    .range-tabs button:hover { background: #1f2937; border-color: #3a4a5a; }
+    .range-tabs button.active { background: #10b981; border-color: #10b981; color: #fff; }
+    
+    .flags { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px; margin-bottom: 30px; }
+    .flag-card { padding: 20px; border-radius: 12px; border-left: 4px solid; }
+    .flag-card.red { background: rgba(239, 68, 68, 0.1); border-color: #ef4444; }
+    .flag-card.amber { background: rgba(251, 146, 60, 0.1); border-color: #fb923c; }
+    .flag-card.info { background: rgba(59, 130, 246, 0.1); border-color: #3b82f6; }
+    .flag-card.green { background: rgba(16, 185, 129, 0.1); border-color: #10b981; }
+    .flag-title { font-weight: 600; font-size: 16px; margin-bottom: 8px; }
+    .flag-card.red .flag-title { color: #fca5a5; }
+    .flag-card.amber .flag-title { color: #fdba74; }
+    .flag-card.info .flag-title { color: #93c5fd; }
+    .flag-card.green .flag-title { color: #6ee7b7; }
+    .flag-detail { font-size: 13px; color: #9ca3af; line-height: 1.5; }
+    
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 30px; }
+    .stat-card { background: #151b23; padding: 20px; border-radius: 12px; border: 1px solid #2a3a4a; }
+    .stat-label { font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+    .stat-value { font-size: 32px; font-weight: 600; color: #fff; }
+    .stat-delta { font-size: 14px; margin-top: 5px; }
+    .stat-delta.positive { color: #10b981; }
+    .stat-delta.negative { color: #ef4444; }
+    
+    .bristol-chart { background: #151b23; padding: 25px; border-radius: 12px; border: 1px solid #2a3a4a; margin-bottom: 30px; }
+    .chart-title { font-size: 18px; font-weight: 600; margin-bottom: 20px; color: #fff; }
+    .bristol-bars { display: flex; gap: 10px; align-items: flex-end; height: 150px; }
+    .bristol-bar { flex: 1; background: #2a3a4a; border-radius: 6px 6px 0 0; position: relative; transition: all 0.3s; min-height: 2px; }
+    .bristol-bar:hover { opacity: 0.8; }
+    .bristol-bar.type-1, .bristol-bar.type-2 { background: #8b5cf6; }
+    .bristol-bar.type-3, .bristol-bar.type-4 { background: #10b981; }
+    .bristol-bar.type-5 { background: #f59e0b; }
+    .bristol-bar.type-6, .bristol-bar.type-7 { background: #ef4444; }
+    .bar-label { position: absolute; bottom: -25px; left: 50%; transform: translateX(-50%); font-size: 12px; color: #6b7280; }
+    .bar-count { position: absolute; top: -20px; left: 50%; transform: translateX(-50%); font-size: 13px; font-weight: 600; color: #fff; }
+    
+    .triggers { background: #151b23; padding: 25px; border-radius: 12px; border: 1px solid #2a3a4a; margin-bottom: 30px; }
+    .trigger-event { padding: 15px; background: #1f2937; border-radius: 8px; margin-bottom: 10px; border-left: 3px solid #ef4444; }
+    .trigger-event:last-child { margin-bottom: 0; }
+    .event-time { font-size: 13px; color: #9ca3af; margin-bottom: 8px; }
+    .event-detail { font-size: 14px; color: #e0e0e0; line-height: 1.5; }
+    .no-triggers { color: #6b7280; font-size: 14px; text-align: center; padding: 20px; }
+    
+    .loading { text-align: center; padding: 60px 20px; color: #6b7280; }
+    .spinner { border: 3px solid #2a3a4a; border-top-color: #10b981; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 15px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    
+    .logout-form { display: inline; }
+    .logout-btn { padding: 10px 20px; border: 1px solid #2a3a4a; background: #151b23; color: #a0b0c0; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>UCell Dashboard</h1>
+      <div class="range-tabs">
+        <button data-range="week" class="active">Week</button>
+        <button data-range="month">Month</button>
+        <button data-range="quarter">Quarter</button>
+        <button data-range="year">Year</button>
+        <form method="POST" action="/logout" class="logout-form">
+          <button type="submit" class="logout-btn">Logout</button>
+        </form>
+      </div>
+    </div>
+    
+    <div id="content">
+      <div class="loading">
+        <div class="spinner"></div>
+        <div>Loading your health data...</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+let currentRange = 'week';
+
+async function loadDashboard(range) {
+  currentRange = range;
+  document.querySelectorAll('.range-tabs button[data-range]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.range === range);
+  });
+  
+  const content = document.getElementById('content');
+  content.innerHTML = '<div class="loading"><div class="spinner"></div><div>Loading...</div></div>';
+  
+  const resp = await fetch('/api/summary', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ range })
+  });
+  
+  if (!resp.ok) {
+    content.innerHTML = '<div class="loading"><div style="color:#ef4444">Failed to load data</div></div>';
+    return;
+  }
+  
+  const data = await resp.json();
+  renderDashboard(data);
+}
+
+function renderDashboard(data) {
+  const content = document.getElementById('content');
+  let html = '';
+  
+  if (data.flags && data.flags.items && data.flags.items.length > 0) {
+    html += '<div class="flags">';
+    data.flags.items.forEach(flag => {
+      html += `<div class="flag-card ${flag.level}">
+        <div class="flag-title">${flag.title}</div>
+        <div class="flag-detail">${flag.rationale}</div>
+        <div class="flag-detail" style="margin-top:8px;opacity:0.7">${flag.evidence}</div>
+      </div>`;
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="flags"><div class="flag-card green"><div class="flag-title">No alerts</div><div class="flag-detail">All metrics within expected ranges for this period.</div></div></div>';
+  }
+  
+  const curr = data.comparison?.current || {};
+  const delta = data.comparison?.deltas || {};
+  html += '<div class="stats-grid">';
+  html += `<div class="stat-card">
+    <div class="stat-label">Total Entries</div>
+    <div class="stat-value">${curr.entries || 0}</div>
+    <div class="stat-delta ${(delta.entries || 0) >= 0 ? 'positive' : 'negative'}">${delta.entries >= 0 ? '+' : ''}${delta.entries || 0} vs prior</div>
+  </div>`;
+  html += `<div class="stat-card">
+    <div class="stat-label">Stool Entries</div>
+    <div class="stat-value">${curr.stoolEntries || 0}</div>
+    <div class="stat-delta ${(delta.stoolEntries || 0) >= 0 ? 'positive' : 'negative'}">${delta.stoolEntries >= 0 ? '+' : ''}${delta.stoolEntries || 0} vs prior</div>
+  </div>`;
+  html += `<div class="stat-card">
+    <div class="stat-label">Diarrhea Events</div>
+    <div class="stat-value">${curr.diarrheaEvents || 0}</div>
+    <div class="stat-delta ${(delta.diarrheaEvents || 0) <= 0 ? 'positive' : 'negative'}">${delta.diarrheaEvents >= 0 ? '+' : ''}${delta.diarrheaEvents || 0} vs prior</div>
+  </div>`;
+  const normalPct = curr.stoolNormalPct != null ? Math.round(curr.stoolNormalPct) + '%' : '–';
+  html += `<div class="stat-card">
+    <div class="stat-label">Normal Stools</div>
+    <div class="stat-value">${normalPct}</div>
+    <div class="stat-delta">Bristol 3-4 range</div>
+  </div>`;
+  html += '</div>';
+  
+  const bristolCounts = data.metrics?.bristolCounts || {};
+  const maxCount = Math.max(...Object.values(bristolCounts), 1);
+  html += '<div class="bristol-chart"><div class="chart-title">Bristol Scale Distribution</div><div class="bristol-bars">';
+  for (let i = 1; i <= 7; i++) {
+    const count = bristolCounts[i] || 0;
+    const height = (count / maxCount) * 100;
+    html += `<div class="bristol-bar type-${i}" style="height:${height}%">
+      ${count > 0 ? `<div class="bar-count">${count}</div>` : ''}
+      <div class="bar-label">${i}</div>
+    </div>`;
+  }
+  html += '</div></div>';
+  
+  const narrative = data.narrative || '';
+  const eventMatch = narrative.match(/Event detail \(most recent\):[\s\S]*?(?=\n\n|$)/);
+  if (eventMatch) {
+    const events = eventMatch[0].split('\n').filter(line => line.trim().startsWith('-'));
+    if (events.length > 0) {
+      html += '<div class="triggers"><div class="chart-title">Recent Diarrhea Events & Triggers</div>';
+      events.forEach(evt => {
+        const clean = evt.replace(/^-\s*/, '');
+        const parts = clean.split(':');
+        if (parts.length >= 2) {
+          html += `<div class="trigger-event">
+            <div class="event-time">${parts[0]}</div>
+            <div class="event-detail">${parts.slice(1).join(':')}</div>
+          </div>`;
+        }
+      });
+      html += '</div>';
+    }
+  }
+  
+  content.innerHTML = html;
+}
+
+loadDashboard('week');
+
+document.querySelectorAll('.range-tabs button[data-range]').forEach(btn => {
+  btn.addEventListener('click', () => loadDashboard(btn.dataset.range));
+});
+</script>
+</body>
+</html>
